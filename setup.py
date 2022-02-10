@@ -2,9 +2,9 @@ import setuptools
 
 setuptools.setup(
     name='Utility',
-    version = '0.0.1',
+    version = '0.0.2',
     author = "Chris O'Quinn",
     url = "https://github.com/smithblack-0/Utility",
-    packages = ['Layer'],
+    packages = ['Utility'],
     install_requires = ['torch', 'numpy']
 )
