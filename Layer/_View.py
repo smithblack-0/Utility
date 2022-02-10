@@ -7,7 +7,6 @@ import numpy as np
 #import functions
 import Functional as S_F
 
-
 class View(nn.Module):
     """
 
@@ -31,5 +30,3 @@ class View(nn.Module):
         self._output_shape = output_shape
     def forward(self, tensor):
         return S_F.View(tensor, self._input_shape, self._output_shape)
-
-
