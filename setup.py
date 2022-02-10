@@ -2,7 +2,7 @@ import setuptools
 
 setuptools.setup(
     name='Utility',
-    version = '0.0.3',
+    version = '0.0.4',
     author = "Chris O'Quinn",
     url = "https://github.com/smithblack-0/Utility",
     packages = ['Utility'],

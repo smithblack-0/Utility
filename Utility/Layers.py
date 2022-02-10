@@ -47,6 +47,12 @@ class View():
         :return: The reshaped tensor.
         """
 
+        #Handle raw integer inputs
+        if isinstance(input_shape, int):
+            input_shape = [input_shape]
+        if isinstance(output_shape, int):
+            output_shape = [output_shape]
+
         # Perform reshape. Apply FAFP error handling.
         try:
             slice_length = len(input_shape)  # Find out how many dimensions will be dynamic
