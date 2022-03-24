@@ -95,15 +95,17 @@ def local(tensor, kernel_width : int, stride_rate : int, dilation_rate : int, pa
     the kernel, and the second-to-last dimension then indices these kernels.
     """
     
-    #Validation
+    #Input Validation
+    
+    assert torch.is_tensor(tensor), "Input 'tensor' was not a torch tensor"
     
     assert isinstance(kernel_width, numbers.Integral), "kernel_width was not an integer. Was %s" % type(kernel_width) 
     assert isinstance(stride_rate, numbers.Integral), "stride_rate was not an integer. Was %s" % type(stride_rate)
     assert isinstance(dilation_rate, numbers.Integral), "dilation_rate was not an integer. Was %s" % type(dilation_rate)
     
-    
     assert kernel_width >= 1, "kernel_width should be greater than or equal to 1"
-    
+    assert stride_rate >= 1, "stride_rate should be greater than or equal to 1"
+    assert dilation_rate >= 1, "dilation_rate should be greater than or equal to 1"
 
     # Construct shape. Take into account the kernel_width, dilation rate, and stride rate.
 
