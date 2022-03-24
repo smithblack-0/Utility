@@ -1,12 +1,15 @@
 """
 
-A holder for a variety of functions each of which
-somehow rearrange the parts of a tensor without
-particularly modifying the underlying values
+This is a module for the manipulation of tensors by means of lightweight memory views and 
+minimal padding. It extends the native torch functions in ways that I find useful.
 
-(sans padding)
+All items within this module are functions. They all accept a tensor and parameters, then
+do something with it. They also tend to return views to allow efficient memory utilization.
 
+The current functions available are.
 
+view
+local
 
 
 """
@@ -22,16 +25,35 @@ import numpy as np
 def view(tensor, input_shape: "tuple, int", output_shape: "tuple, int"):
     """
     Description:
-
-    An improved form of pytorch's view. This will, when passed an input shape and output shape,
-    fill in any missing dimensions from tensor's shape argument, then attempt to turn the last
-    dimensions from input shape to output shape. It also accepts implicit commands,
-
-    For instance, if input shape was (5, 2), and output was 10, the section of shape
-    5,2 would be reshaped to match the section of shape 10.
-
-
-
+    
+    This function exists as an extension to torch's view.
+    
+    This will, when passed an input shape and compatible output shape, assume that said shapes 
+    refer to the later dimensions in a tensor, as in broadcasting, and will perform a reshape from 
+    input shape to output shape while keeping all other dimensions exactly the same.
+    
+    ---- parameters ---
+    
+    :param tensor:
+        The tensor to be modified.
+    :param input_shape: 
+        The expected input shape. This can be a list/tuple of ints, or an int. It should represent the shape at the end
+        of the input tensor's .shape which will be matched in the tensor input
+    :param output_shape:
+        The expected output shape. This can be a list/tuple of ints, or an int. It should represent the final shape one
+        wishes the tensor to take. It also must be the case that the total size of the input and output shape must be the same.
+    ---- Examples ----
+    
+    
+    For tensors of shape:
+    
+    a = (5,2), b=(3, 4, 5,2), c=(30, 5,2), 
+    
+    For input_shape = (5,2), output_shape=10, one has
+    
+    f(a, input_shape, output_shape) = shape(10)
+    f(b, input_shape, output_shape) = shape(3, 4, 10)
+    f(c, input_shape, output_shape) = shape(30, 10)
 
 
     """
