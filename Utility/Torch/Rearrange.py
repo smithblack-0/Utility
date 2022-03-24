@@ -79,7 +79,7 @@ def view(tensor, input_shape: "tuple, int", output_shape: "tuple, int"):
     return tensor.view(new_view)
 
 
-def local(tensor, kernel_width, stride_rate, dilation_rate, pad=False):
+def local(tensor, kernel_width : int, stride_rate : int, dilation_rate : int, pad=False):
     """
     
     Description:
@@ -89,11 +89,21 @@ def local(tensor, kernel_width, stride_rate, dilation_rate, pad=False):
     a convolution. The name "local" is due to the fact that the kernels generated are inherently a
     somewhat local phenomenon. 
     
-    when calling this function, a series of kernels with shape determined by dilation_rate and kernel_width,
+    When calling this function, a series of kernels with shape determined by dilation_rate and kernel_width,
     and with number determined by stride_rate, will be generated along the last dimension of the input tensor. 
     The output will be a tensor with an additional dimension on the end, with width equal to the size of
-    the kernel, and the second-to-last dimension then indices these kernels. 
+    the kernel, and the second-to-last dimension then indices these kernels.
     """
+    
+    #Validation
+    
+    assert isinstance(kernel_width, numbers.Integral), "kernel_width was not an integer. Was %s" % type(kernel_width) 
+    assert isinstance(stride_rate, numbers.Integral), "stride_rate was not an integer. Was %s" % type(stride_rate)
+    assert isinstance(dilation_rate, numbers.Integral), "dilation_rate was not an integer. Was %s" % type(dilation_rate)
+    
+    
+    assert kernel_width >= 1, "kernel_width should be greater than or equal to 1"
+    
 
     # Construct shape. Take into account the kernel_width, dilation rate, and stride rate.
 
