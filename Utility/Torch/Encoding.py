@@ -6,10 +6,12 @@
 
 """
 
-
+import torch
+import numbers
+import math
 ### Positional Encoding Utility. Caching, abstract, slicing. ###
 
-class PosEncoding():
+class TrigPosEncoding():
     """
     Description:
 
@@ -26,6 +28,8 @@ class PosEncoding():
     channel_max, a new item, is not a hard max per say, but rather a constant that
     one will not greatly exceed in terms of channel length. Doing so will tend to
     lead to out of range errors.
+
+
     """
 
     class offsetTensor():

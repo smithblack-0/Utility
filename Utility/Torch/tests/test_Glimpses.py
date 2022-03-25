@@ -1,8 +1,8 @@
 import unittest
 import torch
 
-from Utility.Torch.Rearrange import view
-from Utility.Torch.Rearrange import local
+from Utility.Torch.Glimses import view
+from Utility.Torch.Glimses import local
 
 
 class testLocal(unittest.TestCase):
@@ -79,10 +79,10 @@ class testLocal(unittest.TestCase):
         # make tensor
         tensor = torch.arange(20)
         tensor = tensor.view((2, 10))  # This is what the final buffer should be viewed with respect to
-        tensor = tensor.swapdims(-1, -2).clone()  # Now a new tensor with a new buffert
+        tensor = tensor.swapdims(-1, -2).clone()  # Now a new tensor with a new data buffer
         tensor = tensor.swapdims(-1, -2)  # Buffer is being viewed by stridings. This could fuck things up
 
-        # Declare kernal, striding, final
+        # Declare kernel, striding, final
         kernel, striding, dilation = 2, 2, 2
 
         # Make expected final
@@ -95,6 +95,4 @@ class testLocal(unittest.TestCase):
         test = local(tensor, kernel, striding, dilation)
         test = torch.all(final == test)
         self.assertTrue(test, "Logical failure: buffer issues")
-
-
 
