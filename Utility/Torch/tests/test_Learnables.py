@@ -53,6 +53,6 @@ class testLinear(unittest.TestCase):
         test_single_result = test_single(tensor)
         test_multiple_result = test_multiple(tensor)
 
-
     def test_Head_Independence(self):
         """ Tests whether each head is completely independent"""
+
