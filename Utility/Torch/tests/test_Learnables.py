@@ -55,4 +55,40 @@ class testLinear(unittest.TestCase):
 
     def test_Head_Independence(self):
         """ Tests whether each head is completely independent"""
+        
+        #Create tensors
+        tensor_a = torch.stack([torch.zeros([20]), torch.zeros([20])])
+        tensor_b = torch.stack([torch.zeros([20]), torch.ones([20])])
+        
+        #create tester
+        
+        test_head_independence = Learnables.Linear(20, 20, 2)
+        
+        #Run tests
+        
+        test_result_a = test_head_independence(tensor_a)
+        test_result_b = test_head_independence(tensor_b)
+        
+        #Analyze and assert result
+        result_bool = torch.all(test_result_a[0] == test_result_b[0])
+        self.assertTrue(result_bool, "Heads were found to be interacting")
+     def test_gradients(self):
+        """Test whether or not gradients are propogating properly"""
+        test_tensor = torch.randn([20, 10])
+        
+        #Develop test layer
+        test_grad = Learnables.Linear((20, 10), 1)
+        
+        #Develop optim
+        test_optim = torch.optim.SGD(test_grad.parameters())
+        
+        #perform test
+        test_result = test_grad(test_tensor)
+        test_result.backward()
+        
+        test_optim.step()
+
+    
+        
+        
 
