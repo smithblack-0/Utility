@@ -72,7 +72,7 @@ class testLinear(unittest.TestCase):
         #Analyze and assert result
         result_bool = torch.all(test_result_a[0] == test_result_b[0])
         self.assertTrue(result_bool, "Heads were found to be interacting")
-     def test_gradients(self):
+    def test_gradients(self):
         """Test whether or not gradients are propogating properly"""
         test_tensor = torch.randn([20, 10])
         
@@ -80,7 +80,7 @@ class testLinear(unittest.TestCase):
         test_grad = Learnables.Linear((20, 10), 1)
         
         #Develop optim
-        test_optim = torch.optim.SGD(test_grad.parameters())
+        test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)
         
         #perform test
         test_result = test_grad(test_tensor)
@@ -90,5 +90,16 @@ class testLinear(unittest.TestCase):
 
     
         
-        
+    class testArchive(unittest.TestCase):
+        """
+
+        This is the test case for the
+        archive class of Archivist
+
+        """
+        def testConstructor(self):
+            """ Tests the constructor and return parameters in a few different configurations"""
+
+            record = torch.randn([30, 10, 20])
+            index = torch.randn
 
