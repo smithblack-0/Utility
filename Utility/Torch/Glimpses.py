@@ -190,12 +190,14 @@ def compress_decompress(compress_dimensions_prior_to : int):
         Takes the last dimension of a tensor and, based off what the last compression was,
         restores those dimensions. Then discards decompression information information.
 
-        :param tensor: A tensorflow tensor. Should have a first dimension of size equal to
-            the product of the compressed dimension shapes.
+        :param tensor: A sequence of torch tensors. Should have a first dimension of size equal to
+            the product of the compressed dimension shapes. Can be none, in which case decode step is ignored
         :return: A tensorflow tensor. All compressed dimensions have been restored.
         """
 
         decompression_shape = memory.pop()
+        if tensor is None:
+            return None
         decompression_shape = [*decompression_shape, *tensor.shape[1:]]
         return tensor.view(decompression_shape)
     #Return the functions
