@@ -73,7 +73,8 @@ def view(tensor, input_shape: "tuple, int", output_shape: "tuple, int"):
     # view. Return
     return tensor.view(new_view)
 
-def local(tensor, kernel_width : int, stride_rate : int, dilation_rate : int):
+
+def local(tensor, kernel_width: int, stride_rate: int, dilation_rate: int):
     """
 
     Description:
@@ -95,7 +96,7 @@ def local(tensor, kernel_width : int, stride_rate : int, dilation_rate : int):
 
     """
 
-    #Input Validation
+    # Input Validation
 
     assert torch.is_tensor(tensor), "Input 'tensor' was not a torch tensor"
 
@@ -128,4 +129,78 @@ def local(tensor, kernel_width : int, stride_rate : int, dilation_rate : int):
     # perform extraction
 
     return tensor.as_strided(final_shape, final_stride)
+
+
+def block(tensor, number):
+    """
+
+    Descrption:
+
+    The purpose of this function is to split up the tensor
+    into number equally sized units as a view.
+
+    Excess is simply discarded.
+
+    :param tensor:
+    :param blocks:
+    :return:
+    """
+    pass
+
+def compress_decompress(compress_dimensions_prior_to : int):
+    """
+    Description
+
+    The purpose of this function is to return a pair of functions
+    designed to compress a tensor down to a retain_dims + 1
+    tensor, and decompress them back to the original format
+    when called in sequence.
+
+
+    :param tensor: The tensor to compress dims on, and decompress dims on
+    :param compress_dimensions_prior_to: an int, indicating what dimension to retain dimensions beyond.
+    :return: Two functions, called compress and decompress.
+    """
+
+    #Define the shared memory used by the two functions
+    memory = []
+
+    #Define the compression and decompression function
+    def compression(tensor):
+        """
+
+        Compresses a tensor's extra dimensions. Then returns the compressed tensor,
+        and updates decompressed to decompress that point in the stack.
+
+        :param tensor: A tensorflow tensor. Will be compressed up to the indicated
+            compress_dimensions_prior_to, declared during compress_decompress.
+        :return: A tensorflow tensor. Now has rank equal to compress_dimensions_prior_to + 1
+        """
+        # Compress the tensor. Do this by first getting and storing the compress shape
+        # for decompression, then flattening everything in the compression region.
+
+        compress_shape = tensor.shape[:compress_dimensions_prior_to] #Get restoration shape
+        retain_shape = tensor.shape[compress_dimensions_prior_to:] #Get retained shape
+        final_shape = [-1, *retain_shape] #Create flattening shape
+
+        memory.append(compress_shape) #Store restore shape
+        return tensor.view(final_shape) #Return
+    def decompression(tensor):
+        """
+        Takes the last dimension of a tensor and, based off what the last compression was,
+        restores those dimensions. Then discards decompression information information.
+
+        :param tensor: A tensorflow tensor. Should have a first dimension of size equal to
+            the product of the compressed dimension shapes.
+        :return: A tensorflow tensor. All compressed dimensions have been restored.
+        """
+
+        decompression_shape = memory.pop()
+        decompression_shape = [*decompression_shape, *tensor.shape[1:]]
+        return tensor.view(decompression_shape)
+    #Return the functions
+
+    return compression, decompression
+
+
 
