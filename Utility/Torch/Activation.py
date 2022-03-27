@@ -29,7 +29,11 @@ def vl_relu(tensor, alpha =0.01):
         final_grads = torch.where(dead_grads == 0, alpha*intercepted_grads, dead_grads)
         return final_grads
     #Attach pre and post functions to the appropriate places. Perform relu. Return
-    tensor.register_hook(post)
-    tensor = torch.nn.functional.relu(tensor)
-    tensor.register_hook(pre)
+    if tensor.requires_grad:
+        tensor.register_hook(post)
+        tensor = torch.nn.functional.relu(tensor)
+        tensor.register_hook(pre)
+    else:
+        tensor = torch.nn.functional.relu(tensor)
+
     return tensor
