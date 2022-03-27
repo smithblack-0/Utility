@@ -90,16 +90,81 @@ class testLinear(unittest.TestCase):
 
     
         
-    class testArchive(unittest.TestCase):
-        """
+class testArchive(unittest.TestCase):
+    """
 
-        This is the test case for the
-        archive class of Archivist
+    This is the test case for the
+    archive class of Archivist
 
-        """
-        def testConstructor(self):
-            """ Tests the constructor and return parameters in a few different configurations"""
+    """
+    def test_Constructor(self):
+        """ Tests the constructor and return parameters in a few different configurations"""
 
-            record = torch.randn([30, 10, 20])
-            index = torch.randn
+        record = torch.randn([30, 10, 20])
+        index = torch.randn([30, 10,4])
+        Learnables.Archivist.Archive(record, index)
+    def test_Basic_Truth_Lookup(self):
+        """ Tests whether a lookup may be performed, and if the shape is correct."""
+        #create test fixtures
+        record = torch.randn([30, 10, 20])
+        index = torch.ones([30, 10, 4])
+        query = torch.ones([30, 34, 4])
+        test_fixture = Learnables.Archivist.Archive(record, index)
 
+        expected_normal_shape = torch.tensor([30, 34, 10, 20])
+        expected_training_shape = torch.tensor([30, 34, 11, 20])
+
+        #perform tests
+        normal_test = test_fixture(query)
+        training_test = test_fixture(query, True)
+
+        normal_result = torch.equal(torch.tensor(normal_test.shape), expected_normal_shape)
+        training_result = torch.equal(torch.tensor(training_test.shape), expected_training_shape)
+
+        #Run assert
+        self.assertTrue(normal_result, "Nonpropogating lookup came out with wrong shape")
+        self.assertTrue(training_result, "Propogating lookup came out with wrong shape")
+    def test_Basic_False_Lookup(self, ):
+        """ Tests behavior when everything is found to be false. Tests shutoff works"""
+        # create test fixtures
+        record = torch.randn([30, 10, 20])
+        index = torch.ones([30, 10, 4])
+        query = -torch.ones([30, 34, 4])
+        test_fixture = Learnables.Archivist.Archive(record, index)
+
+        expected_normal_shape = torch.tensor([30, 34, 0, 20])
+        expected_training_shape = torch.tensor([30, 34, 1, 20])
+
+        # perform tests
+        normal_test = test_fixture(query)
+        training_test = test_fixture(query, True)
+
+        normal_result = torch.equal(torch.tensor(normal_test.shape), expected_normal_shape)
+        training_result = torch.equal(torch.tensor(training_test.shape), expected_training_shape)
+
+        print(normal_test.shape)
+        print(training_test.shape)
+        # Run assert
+        self.assertTrue(normal_result, "Nonpropogating lookup came out with wrong shape")
+        self.assertTrue(training_result, "Propogating lookup came out with wrong shape")
+
+    def test_logic(self):
+        """ Test whether the actual underlying logic words. """
+        # create test fixtures
+        record = torch.arange(12)
+        record = record.view(12, 1)
+
+        index = torch.concat([torch.ones([6, 1]), -torch.ones([6, 1])], dim=0)
+
+        query = torch.ones([2])
+        query[1::2] = -query[1::2]
+        query = query.view(2, 1)
+
+        expected = torch.stack([torch.arange(6), torch.arange(6, 12)], dim=0).type(torch.float32)
+
+        test_feature = Learnables.Archivist.Archive(record, index)
+        #Run tests
+
+        test_output = test_feature(query)
+        test_bool = torch.equal(test_output.squeeze(), expected)
+        self.assertTrue(test_bool, "Logic failed")
