@@ -108,7 +108,7 @@ class testArchive(unittest.TestCase):
         #create test fixtures
         record = torch.randn([30, 10, 20])
         index = torch.ones([30, 10, 4])
-        query = torch.ones([30, 34, 4])
+        query = torch.ones([30,1, 34, 4])
         test_fixture = Learnables.Archivist.Archive(record, index)
 
         expected_normal_shape = torch.tensor([30, 34, 10, 20])
@@ -129,7 +129,7 @@ class testArchive(unittest.TestCase):
         # create test fixtures
         record = torch.randn([30, 10, 20])
         index = torch.ones([30, 10, 4])
-        query = -torch.ones([30, 34, 4])
+        query = -torch.ones([30,1, 34, 4])
         test_fixture = Learnables.Archivist.Archive(record, index)
 
         expected_normal_shape = torch.tensor([30, 34, 0, 20])
@@ -144,6 +144,27 @@ class testArchive(unittest.TestCase):
 
         print(normal_test.shape)
         print(training_test.shape)
+        # Run assert
+        self.assertTrue(normal_result, "Nonpropogating lookup came out with wrong shape")
+        self.assertTrue(training_result, "Propogating lookup came out with wrong shape")
+    def test_Head_Lookup(self):
+        """ Tests whether a lookup involving using the heads may be performed, and if the shape is correct."""
+        # create test fixtures
+        record = torch.randn([28, 10, 20])
+        index = torch.ones([28, 10, 4])
+        query = torch.ones([28, 2, 34, 4])
+        test_fixture = Learnables.Archivist.Archive(record, index)
+
+        expected_normal_shape = torch.tensor([28, 34, 20, 20])
+        expected_training_shape = torch.tensor([28, 34, 21, 20])
+
+        # perform tests
+        normal_test = test_fixture(query)
+        training_test = test_fixture(query, True)
+
+        normal_result = torch.equal(torch.tensor(normal_test.shape), expected_normal_shape)
+        training_result = torch.equal(torch.tensor(training_test.shape), expected_training_shape)
+
         # Run assert
         self.assertTrue(normal_result, "Nonpropogating lookup came out with wrong shape")
         self.assertTrue(training_result, "Propogating lookup came out with wrong shape")
