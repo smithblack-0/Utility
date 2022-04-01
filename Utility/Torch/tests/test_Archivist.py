@@ -115,7 +115,7 @@ class test_Indexer(unittest.TestCase):
     def test_Constructor(self):
         """ tests whether the constructor will run or fail successfully in a variety of situations"""
         Archivist.Indexer(512, 60)
-        Archivist.Indexer(512, 60, 5, 312, 13, 0.4, 0.5)
+        Archivist.Indexer(512, 60, 5, 312, 0.4, 0.5)
 
     def test_no_item_dim_Create(self):
         """ tests whether an implicit basic archive can be constructed"""
@@ -150,12 +150,12 @@ class test_Indexer(unittest.TestCase):
         self.assertTrue(test_result.archive_length == 32, "archive length incorrect")
         self.assertTrue(test_result.index_dim == 20, "index dim incorrect")
 
-    def test_Batching_Record_Create(self):
+    def test_Batching_Archive_Create(self):
         """ tests whether or not an indexer can successfully create an arbitrarily batched archive"""
 
         #create test fixtures
 
-        record: torch.Tensor = torch.randn([13, 20, 23, 512])
+        record: torch.Tensor = torch.zeros([13,20, 24, 512])
         indexer: Archivist.Indexer = Archivist.Indexer(512, 64)
 
         #Run tests
@@ -166,4 +166,8 @@ class test_Indexer(unittest.TestCase):
 
         self.assertTrue(test_result.record_dim == 512, "record d_model incorrect")
         self.assertTrue(test_result.index_dim == 64, "index d_model incorrect")
-        self.assertTrue(test_result.archive_length == 23, "archive item lengths incorrect")
+        self.assertTrue(test_result.archive_length == 24, "archive item lengths incorrect")
+
+class testRetrieval(unittest.TestCase):
+
+    pass

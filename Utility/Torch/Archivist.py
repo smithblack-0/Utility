@@ -1,11 +1,12 @@
+import math
 import uuid
 import warnings
 
 import torch
 from torch import nn
 
+from Utility.Torch import Learnables
 from Utility.Torch import Activation
-from Utility.Torch.Learnables import Linear
 
 """
 Description:
@@ -266,32 +267,44 @@ class Indexer(nn.Module):
     from the immediate constructor, along with global information gathered from
     Dropout is executed post-index projection, while dimensions remain high.
 
-    It MUST be the case that all archives with the same id have the same d_model
-    and d_index
+    The result will be an archive.
     """
 
-    def __init__(self, d_model : int , d_index : int , projection_multiplier : int = 3, id=None,
-                 metahead_width: int = 20, threshold: float=0.1, dropout: float = 0.1):
+    def __init__(self, d_model : int , d_index : int , projection_multiplier : float = 3.0, id=None,
+                 threshold: float=0.1, dropout: float = 0.1):
+        """
+
+        The initialization for the class. This creates the layers and regularization utilized
+        in order to encode information for compact lookup. Of particular importance,
+
+        :param d_model: the width of the model dimension
+        :param d_index: the desired index width
+        :param projection_multiplier: A float. Multiplies d_model, and determines what the intermediate
+            layer width will be
+        :param id: Can be None, or a hashable. Archives will be encoded with this id, and interfaces
+            must handle them
+        :param threshold: A parameter used by an archive
+        :param dropout: The dropout rate
+        """
         # Start torch
         super().__init__()
 
-        # Store standing values
+        # Store threshold value
 
-        self._threshold = threshold
+        self._threshold: float = threshold
 
-        # Create index generation layers
-        self._ff1 = Linear(d_model, projection_multiplier * d_model)
-        self._ff2 = Linear(projection_multiplier * d_model, d_index)
+        #Setup the kernel projection layers, then the Index resolution and
+        #Metadata Resolution layers
+        intermediate_width: int = round(projection_multiplier*d_model)
+        self._ff: Learnables.Linear = Learnables.Linear(d_model, intermediate_width)
+        self._activation: Activation.vl_relu = Activation.vl_relu
 
-        #Create the metainfo generation layers
+        self._indexer: Learnables.Linear = Learnables.Linear(intermediate_width, d_index)
+        self._metainfo: Learnables.Linear = Learnables.Linear(intermediate_width, d_index)
 
-        self._metainfo1 = Linear(d_model, (metahead_width, projection_multiplier*d_index)) # Generation of meta reduction heads
-        self._metainfo2 = Linear(projection_multiplier*d_index, d_index, metahead_width) # Post ReLu reduction.
-        self._metainfo3 = Linear(metahead_width, 1) #Final reduction layer
+        #Create the dropout layer
 
-        #Create the layernorm finale layer, and dropout layer
-        self._LayerNorm = nn.LayerNorm(d_index)
-        self._dropout = nn.Dropout(dropout)
+        self._dropout: nn.Dropout = nn.Dropout(dropout)
 
         #Assign myself an id
         if id is None:
@@ -301,8 +314,8 @@ class Indexer(nn.Module):
 
         #Store some validation parameters
 
-        self._dmodel = d_model
-        self._dindex = d_index
+        self._dmodel: int = d_model
+        self._dindex: int = d_index
 
     def forward(self, record):
         """
@@ -327,37 +340,28 @@ class Indexer(nn.Module):
             record = record.unsqueeze(0)
 
 
-        # Generate index by using the feedforward layers. This is done
-        # with a series of feedforwards much like a transformer would
-        # experience.
-        index = record
-        index = self._ff1(index)
-        index = self._dropout(index)
-        index = Activation.vl_relu(index)
-        index = self._ff2(index)
+        # Generate the source layer, taking the record and projecting it
+        #into a higher space then performing dropout. This will be used to
+        #generate index and metainfo
+        x = record #(..., items, d_model)
+        x = self._ff(x) #(..., items, intermediate_width)
+        x = self._activation(x)
+        x = self._dropout(x) #(..., items, intermediate_width)
 
+        #Generate the index, item by item. Generate the metainfo, then
+        #use max to reduce.
+        index = self._indexer(x) #(... items, d_index)
+        metainfo = self._metainfo(x) #(..., items, d_index)
+        metainfo, _ = metainfo.max(dim=-2) #(..., d_index)
+        metainfo = metainfo.unsqueeze(-2) #(..., 1, d_index)
 
-        # Salt index with metainfo marker. This is created by
-        # projecting the index to produce extra heads, transforming those
-        # heads under a ReLU, taking the maximum across the index, and finally
-        # combining all the heads to produce a final metavector.
-        #
-        # This is then broadcast over the index, giving all of them info on things the model
-        # considered important.
+        #Combine metainfo and index then build an archive for the result.
+        #Make sure to include my id, the index, the record, and the current
+        #threshold. Also, convert to float16 for space reasons.
 
-        metatensor = self._metainfo1(record)
-        metatensor = Activation.vl_relu(metatensor)
-        metatensor = self._metainfo2(metatensor)# (..., items, metahead, index)
-        metatensor, _ = metatensor.max(dim=-3)
-        metatensor = metatensor.transpose(-1,-2) #(..., index, metahead)
-        metatensor = self._metainfo3(metatensor).transpose(-1, -2) #(..., 1, index_dim)
-
-        index = index + metatensor
-        index = self._LayerNorm(index)
-        index = index.type(torch.float16)
-        # Make Archive
-
-        return Archive(record, index, self._id, self._threshold)
+        final_index = index + metainfo
+        final_index = final_index.type(torch.float16)
+        return Archive(record, final_index, self._id, self._threshold)
 
 class Retrieval(nn.Module):
     """
@@ -374,7 +378,7 @@ class Retrieval(nn.Module):
     output contains the source-marked varieties
     of
     """
-    def __init__(self, d_queries, d_model, retrieval_heads = 5, dropout = 0.1, suppress_errors=False):
+    def __init__(self, d_queries: int, d_model: int, retrieval_heads = 5, dropout = 0.1, suppress_errors=False):
         """
         The setup function is rather sparse. It is the case
         that the initialization of actual head handlers is
@@ -412,10 +416,10 @@ class Retrieval(nn.Module):
 
         """
 
-        archive_encoder = Linear(self._dquery, (self._heads, d_index))
+        archive_encoder = Learnables.Linear(self._dquery, (self._heads, d_index))
         archive_encoder = lambda x : archive_encoder(x).transpose(-2, -3) #(..., head, query, d_index)
         archive_encoder = lambda x : self._dropout(archive_encoder(x))
-        archive_decoder = Linear(d_model, self._dmodel) #Back to my dimensions
+        archive_decoder = Learnables.Linear(d_model, self._dmodel) #Back to my dimensions
         return archive_encoder, archive_decoder
     def forward(self, query : torch.tensor, archives : list):
         """
