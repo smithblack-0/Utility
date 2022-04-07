@@ -4,7 +4,7 @@
 
 import torch
 from torch import nn
-
+from typing import Sequence, List, Union, Dict
 """
 
 DModule: An extension of torch's Module. Collects DPolicy and DParameter items
@@ -17,6 +17,14 @@ DParameter: A object which acts as a dynamic parameter. May be initialized with 
     Collected by DModule.
 
 """
+
+class PopulationManager():
+    """
+
+    
+
+
+    """
 
 class DModule(nn.Module):
     """
@@ -39,56 +47,62 @@ class DModule(nn.Module):
 
     """
     pass
-class DOperators():
+class DOperatorMixin():
     """
 
-    A holder for a class which makes dynamic tensors and processes them
 
     """
-    @staticmethdo
 
-class DTensor():
+
+class DTensor(torch.Tensor):
     """
 
-    A Dynamic Tensor. Created by interactions between other dynamic tensors
-    , dynamic parameters, or tensors and dynamic parameters.
+    A Dynamic Tensor.
+
+    Contains, per batch item, information
+    indicating which if any dynamic properties are
+    active.
 
     """
-    ## Tensor interface: Operations
 
-    ## Tensor interface: Conditions ##
-    def equal(self, other):
-        """ Check if the two DTensor's are the same"""
-        pass
-    def less_equal(self, other):
-        """ Check if items in self is less than or equal to other"""
-        pass
-    def greater_equal(self, other):
-        """ Check if items in self is greater than or equal to other"""
-        pass
-    def not_equal(self, other):
-        """ Check if this item and other are not the same."""
-        pass
-    def any(self):
-        """ Return true if any subentries are true"""
-        pass
-    def all(self):
-        """ Return true if all subentries are true"""
+    def __init__(self,
+                 data: Sequence[torch.Tensor],
+                 shapes: Sequence[Sequence[Union[int, torch.Tensor, None]]],
+                 *args,
 
+                 policies: Union[Sequence[Dict[int, SubAction]], None] = None,
+                 **kwargs):
+        
+        #Sanity check that items exist for each subcomponent of the batch.
+        assert len(data) == len(shapes), "Data did not contain one shape per batch dim"
+
+        #Sanity check that inputs
+        for tensor, action, dynamic_shape in zip(data, shapes):
+
+            #Check that any indirect references are in fact
+
+            assert torch.is_tensor(tensor), "Item in sequence data was not tensor"
+            data_shape = tensor.shape
 
 
-    #Dunder methods: Comparison
-    def __eq__(self, other):
-        return self.equal(other)
-    def __le__(self, other):
-        return self.less_equal(other)
-    def __ge__(self, other):
-        return self.greater_equal(other)
-    def __ne__(self, other):
-        return self.not_equal(other)
+
+
+
+
+
+        #Start torch
+        super().__init__(data, *args, **kwargs)
+        
+        #Store data, actions, shape
+
+
+        
+        
+
 
 
 class DParameter(nn.Parameter):
+    pass
 
 class DOptim(torch.optim.Optimizer):
     """
