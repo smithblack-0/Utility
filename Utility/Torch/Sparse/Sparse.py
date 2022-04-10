@@ -1,12 +1,13 @@
 import torch
+import inspect
 import torch_sparse
-import torch_scatter
+
 
 from torch import nn
 from typing import Union, Optional, Sequence
 
 
-class SparseParameter(nn.Parameter):
+class SparseParameter(nn.Module):
     """
 
     A class to build a sparse compatible pseudodynamic parameter
@@ -15,7 +16,6 @@ class SparseParameter(nn.Parameter):
     pruned using the associated functions.
 
     """
-
     @property
     def total_active(self):
         return self.active_index.shape[0]
@@ -25,6 +25,7 @@ class SparseParameter(nn.Parameter):
     @property
     def total_param_space(self):
         return self.inactive_index + self.active_index
+
     @classmethod
     def from_sparse(cls,
                     sparse_tensor: torch_sparse.SparseTensor,
@@ -62,7 +63,6 @@ class SparseParameter(nn.Parameter):
         #Grow the initial tensor, then return the parameter
         item.grow_(row=row, col=col, value=value)
         return item
-
 
 
 
@@ -114,8 +114,8 @@ class SparseParameter(nn.Parameter):
             threshold_result = torch.abs(value) > threshold
             num_failed = threshold_result.numel() - threshold_result.sum()
         elif abs_percentage is not None:
-            num_required_deactive = round(abs_percentage/100.*self.total_param_space)
-            diff = num_required_deactive-self.total_inactive
+            num_required_inactive = round(abs_percentage/100.*self.total_param_space)
+            diff = num_required_inactive-self.total_inactive
             num_failed = max(diff, 0) #Do not go reactivating things.
         else:
             raise RuntimeError("This should not be possible.")
@@ -140,7 +140,6 @@ class SparseParameter(nn.Parameter):
         new_cols = col[passed_indices]
         new_values = value[passed_indices]
         self.sparse = torch_sparse.SparseTensor(row=new_rows, col=new_cols, value=new_values)
-
     def grow_(self,
             row: Optional[torch.Tensor] = None,
             col: Optional[torch.Tensor] = None,
@@ -167,10 +166,10 @@ class SparseParameter(nn.Parameter):
 
         assert isinstance(value, (torch.Tensor, int, float)), "Growth value must be tensor, int, or float"
         if isinstance(value, (int, float)):
-            value = torch.full(row.shape[0], value)
+            value = torch.full([row.shape[0]], value)
 
         #Handle case where index is too long
-        if value.shape[0] > self.inactive_index:
+        if value.shape[0] > self.total_inactive:
             if discard_unused:
                 value = value[self.inactive_index]
                 row = row[self.inactive_index]
@@ -197,6 +196,7 @@ class SparseParameter(nn.Parameter):
             value = torch.concat([old_val, value])
 
         self.sparse = torch_sparse.SparseTensor(row=row, col=col, value=value)
+
     def __init__(
             self,
             reservation: int,
@@ -215,6 +215,8 @@ class SparseParameter(nn.Parameter):
         :param requires_grad: Whether a gradient will be needed on the parameter.
         """
 
+        super().__init__()
+
         assert isinstance(reservation, int), "reservation must be an int"
         assert reservation >= 0, "Reservation was negative."
 
@@ -222,13 +224,17 @@ class SparseParameter(nn.Parameter):
             assert isinstance(item, int), "Item in reservation shape was not int"
             assert item > 0, "item in reservation shape was less than 1"
 
-        shape = [reservation, *list(reservation_shape)]
-        value = torch.empty(shape)
+        shape = tuple([reservation, *list(reservation_shape)])
+        value = nn.Parameter(torch.empty(shape), requires_grad=requires_grad)
 
-        super().__init__(value, requires_grad)
-
-        #Start up the memory tracker
+        empty_index = torch.empty([], dtype=torch.long)
         self.sparse = None
-        self.active_index = torch.empty([])
+        self.backend = value
+
+        #Start up the parameter memory tracker
+        self.active_index = torch.empty([0],)
         self.inactive_index = torch.arange(reservation)
+
+
+
 
