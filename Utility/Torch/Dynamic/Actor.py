@@ -36,7 +36,6 @@ class MultiCategoricalActor(Actor):
         #Initialize the actions, logits, and coefficient
         actions = torch.stack([torch.tensor(uuid.uuid1()) for _ in range(seed_width)], dim=-1)
         logits = -torch.log(torch.tensor(seed_width, dtype=torch.float32)) * torch.ones(seed_width)
-        coefficient = torch.tensor(generation_coefficient)
 
         #Register these as buffers.
         self.actions = self.register_buffer('actions', actions)
@@ -50,6 +49,8 @@ class MultiCategoricalActor(Actor):
         #Append on the generation probability. Then perform sample
         threshold = torch.softmax(self.logits)*torch.randn(self.logits.shape[0]) > self.threshold
         sample = self.logits.masked_select(threshold)
+
+
 
 
 

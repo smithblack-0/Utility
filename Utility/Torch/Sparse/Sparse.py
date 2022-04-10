@@ -1,19 +1,19 @@
 import torch
-import inspect
 import torch_sparse
-
+import warnings
 
 from torch import nn
-from typing import Union, Optional, Sequence
+from typing import Union, Optional, Callable
 
 
 class SparseParameter(nn.Module):
     """
 
-    A class to build a sparse compatible pseudodynamic parameter
+    A class to build a torch-sparse compatible pseudodynamic parameter
     manager. One may request a region of memory to be set aside for
-    a particular parameter, after which the region can be grown or
-    pruned using the associated functions.
+    a particular set of sparse, after which the region can be grown or
+    pruned using the associated functions and reshaped to any size, contingent
+    on not exceeding the memory footprint.
 
     """
     @property
@@ -42,7 +42,7 @@ class SparseParameter(nn.Module):
         """
 
 
-        assert excess_reservations >= 0
+        assert excess_reservations >= 0, "excess reservation cannot be negative"
 
         #Get sparse information
         row = sparse_tensor.storage.row()
@@ -70,7 +70,8 @@ class SparseParameter(nn.Module):
     def prune_(self,
                threshold: Optional[float] = None,
                rel_percentage: Optional[float]=None,
-               abs_percentage: Optional[float] = None):
+               abs_percentage: Optional[float] = None,
+               sort: Optional[Union[str, Callable]] = None):
         """
         Prunes away excess parameters. These are transparently deactivated
         and kept around for growth cycles.
@@ -79,12 +80,19 @@ class SparseParameter(nn.Module):
         value falls below threshold, the bottom rel_percentage active parameters,
         or even just ensure that abs_percentage total parameters are shut off.
 
-        These modes are all exclusive
+        These modes are all exclusive. The final parameter is sort, which governs how
+        the values are sorted when making the prune decision.
+
+
 
         :param threshold: The threshold. Items whose absolute value are below this are pruned
         :param rel_percentage: The percentage. The bottom x percentage of active parameters is pruned.
         :param abs_percentage: The bottom abs_percentage parameters are trimmed, from the total parameters
             If these are already inactive, nothing changes.
+        :param sort: The sorting method used. May be one of a predefined list, or a custom function
+            Options are:
+                "AscendingAbs (default)": Items have their absolute value taken, then are sorted in
+                    ascending order
         """
 
         #Sanity check
@@ -141,16 +149,17 @@ class SparseParameter(nn.Module):
         new_values = value[passed_indices]
         self.sparse = torch_sparse.SparseTensor(row=new_rows, col=new_cols, value=new_values)
     def grow_(self,
-            row: Optional[torch.Tensor] = None,
-            col: Optional[torch.Tensor] = None,
-            value: Optional[Union[torch.Tensor, int, float]] = 0,
+            row: torch.Tensor = None,
+            col: torch.Tensor = None,
+            value: Union[torch.Tensor, int, float] = 0,
             discard_unused: Optional[bool] = True):
         """
 
         A function capable of inserting new connections into new
         parameters.
+
         :param row:
-            A int64 tensor of row indices
+            A int64 tensor of row indices. 1d, or empty 0d
         :param col:
             A int64 tensor of column indices
         :param value:
@@ -159,48 +168,90 @@ class SparseParameter(nn.Module):
             Whether or not to throw an error when more indices are defined then
             there are spare parameters, or to instead slice out as long a section
             as we can fit and then discard the rest
+        :return: True or False. True if completed without complication. False if values were
+            discarded
+
+        :raises:
+            AssertionError, if something is wrong.
+            RuntimeWarning, if discard is executed.
+
+
         """
+        with torch.no_grad():
+            #Sanity checks
+            assert torch.is_tensor(row), "row was not tensor"
+            assert row.dim() == 1, "row was not 1d"
 
-        #Sanity check, broadcast conversions
+            assert torch.is_tensor(col), "col was not tensor"
+            assert col.dim() == 1, "col was not 1d"
+
+            assert row.shape[0] == col.shape[0], "row and col must have the same length"
 
 
-        assert isinstance(value, (torch.Tensor, int, float)), "Growth value must be tensor, int, or float"
-        if isinstance(value, (int, float)):
-            value = torch.full([row.shape[0]], value)
+            sparse_length = row.shape[0]
+            assert isinstance(value, (torch.Tensor, int, float)), "value must be tensor, int, or float"
+            if isinstance(value, (int, float)):
+                value = torch.full([sparse_length], value)
+            if value.dim() == 0:
+                value = torch.full([sparse_length], value.item())
 
-        #Handle case where index is too long
-        if value.shape[0] > self.total_inactive:
-            if discard_unused:
-                value = value[self.inactive_index]
-                row = row[self.inactive_index]
-                col = col[self.inactive_index]
-            else:
-                raise IndexError("Insufficient parameters to grow for vector of length %s" % row.shape[0])
+            assert value.dim() == 1, "value must be 1d"
+            assert value.shape[0] == sparse_length, "row and value lengths do not match"
 
-        #Reactivate needed additional parameters
+            #Handle case where index is too long
+            if sparse_length > self.total_inactive:
+                if discard_unused:
+                    if self.suppressing_grow_warning is False:
+                        message ="""
+                                Provided index and values are longer than remaining parameters
+                                This may cause unexpected behavior
+                                
+                                This message will now self suppress.
+                                """
+                        
+                        warnings.warn(message, RuntimeWarning)
+                        self.suppressing_grow_warning = True
+                    value = value[:self.total_inactive]
+                    row = row[:self.total_inactive]
+                    col = col[:self.total_inactive]
+                    sparse_length = self.total_inactive
+                else:
+                    raise IndexError("Insufficient parameters to grow for vector of length %s" % sparse_length)
 
-        length = row.shape[0]
-        newly_active, remaining_inactive = self.inactive_index[:length], self.inactive_index[length:]
-        self.active_index = torch.concat([self.active_index, newly_active])
-        self.inactive_index = remaining_inactive
+            #Reactivate needed additional parameters
 
-        #Construct new sparse representation
+            length = sparse_length
+            newly_active, remaining_inactive = self.inactive_index[:length], self.inactive_index[length:]
+            self.active_index = torch.concat([self.active_index, newly_active])
+            self.inactive_index = remaining_inactive
 
-        if self.sparse is not None:
-            old_row = self.sparse.storage.row()
-            old_col = self.sparse.storage.col()
-            old_val = self.sparse.storage.value()
+            self.backend[newly_active] = value #setup parameter
+            value = self.backend[newly_active] #get parameterized version
 
-            row = torch.concat([old_row, row])
-            col = torch.concat([old_col, col])
-            value = torch.concat([old_val, value])
 
-        self.sparse = torch_sparse.SparseTensor(row=row, col=col, value=value)
+            #Construct new sparse representation. Update
+
+            if self.sparse is not None:
+                old_row = self.sparse.storage.row()
+                old_col = self.sparse.storage.col()
+                old_val = self.sparse.storage.value()
+
+                row = torch.concat([old_row, row])
+                col = torch.concat([old_col, col])
+                value = torch.concat([old_val, value])
+
+                print(row)
+
+            self.sparse = torch_sparse.SparseTensor(row=row, col=col, value=value)
+
+            #Finish by returning true if entirely successful, or false if content was trimmed.
+            if sparse_length > self.total_inactive:
+                return False
+            return True
 
     def __init__(
             self,
             reservation: int,
-            reservation_shape: Optional[Sequence[int]] = (1,),
             requires_grad: Optional[bool] = True,
 
     ):
@@ -209,32 +260,25 @@ class SparseParameter(nn.Module):
         a promise that x amount of memory will be reserved for the construction
         of sparse parameters. .grow_ is needed to make it useful.
 
-        :param reservation: An int. How much distinct memory chunks to reserve
-        :param reservation_shape: A sequence of ints, representing the shape of each
-            reservation.
+        :param reservation: An int. How many distinct parameters chunks to reserve
         :param requires_grad: Whether a gradient will be needed on the parameter.
         """
 
         super().__init__()
-
+        print(requires_grad)
         assert isinstance(reservation, int), "reservation must be an int"
         assert reservation >= 0, "Reservation was negative."
+        assert isinstance(requires_grad, bool), ("requires grad must be bool", requires_grad)
 
-        for item in reservation_shape:
-            assert isinstance(item, int), "Item in reservation shape was not int"
-            assert item > 0, "item in reservation shape was less than 1"
-
-        shape = tuple([reservation, *list(reservation_shape)])
-        value = nn.Parameter(torch.empty(shape), requires_grad=requires_grad)
-
-        empty_index = torch.empty([], dtype=torch.long)
         self.sparse = None
-        self.backend = value
+        self.backend = nn.Parameter(torch.empty([reservation]), requires_grad=requires_grad)
 
         #Start up the parameter memory tracker
         self.active_index = torch.empty([0],)
         self.inactive_index = torch.arange(reservation)
 
+        #Start flags
+        self.suppressing_grow_warning = False
 
 
 
