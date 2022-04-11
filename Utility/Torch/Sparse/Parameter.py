@@ -6,60 +6,6 @@ from torch import nn
 from typing import Union, Optional, Callable
 
 
-class Capture():
-    """
-
-    A container for a capture demand, and the place to put the result.
-
-    When the next sparse-dense math operation is called, a max active capture is performed
-    on it.
-
-    """
-    def capture(self,
-                historical: int,
-                callback: Callable,
-                quantity: int,
-                threshold: Union[float, None],
-                mask: torch.Tensor,
-
-                ):
-        """
-        The driver behind capture. Mainly stores information here.
-        """
-
-        self.history = historical
-        self.mask = mask
-        self.callback = callback
-        self.quantity = quantity
-        self.threshold = threshold
-        self.result = None
-
-    def matmul(self,
-               sparse: torch_sparse.SparseTensor,
-               other: torch.Tensor):
-
-        device = sparse.device()
-
-        def hook(gradient: torch.Tensor):
-            #Perform actual backprop calculation. Include broadcast reduction
-            result = gradient.transpose(-1, -2).matmul(other)
-            while result.dim() > sparse.dim():
-                result = result.sum(dim=0)
-
-            #Generate index mesh
-            indices = [torch.arange(item, device=device) for item in result.shape]
-            index = torch.meshgrid(indices)
-
-            #Eliminate all masked items, and linearize result
-            linear_values = result.masked_select(self.mask)
-            linear_values = linear_values.abs()
-            index_values = index.masked_select(self.mask)
-
-            #Handle extraction cases
-            if self.threshold is not None:
-                mask = linear_values > self.threshold
-                threshold_results = index_values.index
-
 class SubSampler(nn.Module):
     """
 
@@ -83,7 +29,15 @@ class SubSampler(nn.Module):
         col = self._backend.sparse.storage.col()
         return torch.stack([row, col], dim=0)
 
-
+    def required_stochastic_samples(self, L, N):
+        
+        ### A manually calculated helper funciton. The result is the number of 
+        ### stochastic samples it is expected to require to get L distinct quantities out of
+        ### N choices, assuming replacement allowed and unique reduced.
+     
+        p = 1/N #Probability of picking a particular item
+        return math.log(1-L*p, 1-p)
+        
     def __init__(self,
                 operator: Callable,
                 max_quantity: int,
@@ -119,6 +73,24 @@ class SubSampler(nn.Module):
         self._historical = None
         self._hysteresis = hysteresis
     def forward(self, sparse, *args, **kwargs):
+        
+        
+        numel = sparse.size(0)*sparse.size(1)        
+        stochastic_samples = self.required_stochastic_samples(self.quantity, numel)
+        stochastic_samples = (1+math.sqrt(numel))*stochastic_samples #Padding for variation.
+        
+        
+        if stochastic_samples > numel:
+            #It is cheaper in memory, in theory, to run as a pseudo-dense capture
+            sampler = self.dense_capture(sparse.size(0), sparse.size(1))
+        else:
+            #Stochastic capture is the way to go
+            sampler = self.sparse_capture(sparse.size(0), sparse.size(1))
+            
+        def hook(gradients):
+            
+            
+            
 
         assert isinstance(sparse, torch_sparse.SparseTensor)
         if self.suppress:
