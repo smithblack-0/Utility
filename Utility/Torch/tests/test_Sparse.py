@@ -2,7 +2,7 @@ import unittest
 import torch
 import torch_sparse
 
-from Utility.Torch.Sparse import Sparse
+from Utility.Torch.Sparse import Parameter
 
 class test_SparseParameter(unittest.TestCase):
     def test_allocate(self):
@@ -12,14 +12,14 @@ class test_SparseParameter(unittest.TestCase):
         custom_shape_parameter = Sparse.SparseParameter(300)
         nograd_parameter = Sparse.SparseParameter(321, requires_grad=False)
 
-        print(default_parameter.backend.shape)
-        self.assertTrue(default_parameter.backend.shape == (13,))
-        self.assertTrue(custom_shape_parameter.backend.shape == (300,))
-        self.assertTrue(nograd_parameter.backend.shape == (321,))
+        print(default_parameter._backend.shape)
+        self.assertTrue(default_parameter._backend.shape == (13,))
+        self.assertTrue(custom_shape_parameter._backend.shape == (300,))
+        self.assertTrue(nograd_parameter._backend.shape == (321,))
 
-        self.assertTrue(default_parameter.backend.requires_grad)
-        self.assertTrue(custom_shape_parameter.backend.requires_grad)
-        self.assertFalse(nograd_parameter.backend.requires_grad)
+        self.assertTrue(default_parameter._backend.requires_grad)
+        self.assertTrue(custom_shape_parameter._backend.requires_grad)
+        self.assertFalse(nograd_parameter._backend.requires_grad)
     def test_grow(self):
         """ Test whether I can easily grow tensor parameters"""
 
@@ -49,8 +49,8 @@ class test_SparseParameter(unittest.TestCase):
             basic_parameter_a.grow_(row, col, basic_fill)
         basic_parameter_b.grow_(row, col, basic_fill, False)
 
-        assert torch.all(basic_parameter_a.backend == torch.ones([15])), "backend not copied in correctly"
-        assert torch.all(basic_parameter_b.backend[:15] == torch.ones([15])), "backend not copied corretly"
+        assert torch.all(basic_parameter_a._backend == torch.ones([15])), "backend not copied in correctly"
+        assert torch.all(basic_parameter_b._backend[:15] == torch.ones([15])), "backend not copied corretly"
 
         assert a_expected_result == basic_parameter_a.sparse, "expected and actual sparse do not match"
         assert b_expected_result_1 == basic_parameter_b.sparse, "expected and actual sparse do not match"
@@ -67,14 +67,15 @@ class test_SparseParameter(unittest.TestCase):
         print(b_expected_result_2)
         print(basic_parameter_b.sparse)
         assert basic_parameter_b.sparse == b_expected_result_2, "Doublegrowth result not what expected"
-        assert torch.equal(basic_parameter_b.backend, b_fill2), "Backend not as expected"
+        assert torch.equal(basic_parameter_b._backend, b_fill2), "Backend not as expected"
 
 
         #Test nonsuppressed error fails when full.
         with self.assertRaises(IndexError):
             basic_parameter_a.grow_(row, col, new_fill, False)
     def test_prune(self):
-        """ Tests that the pruning function works effectively"""
+        """ Tests that the pruning function works as expected"""
+
 
 
 
