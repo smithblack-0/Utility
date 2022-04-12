@@ -76,6 +76,14 @@ class test_SparseParameter(unittest.TestCase):
     def test_prune(self):
         """ Tests that the pruning function works as expected"""
 
+class test_Capture(unittest.TestCase):
+    """
+
+    Tests the ability of the capture module to catch gradient information.
+
+    """
+    def test_startup(self):
+
 
 
 

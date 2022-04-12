@@ -1,127 +1,11 @@
+import math
+
 import torch
 import torch_sparse
 import warnings
 
 from torch import nn
 from typing import Union, Optional, Callable
-
-
-class SubSampler(nn.Module):
-    """
-
-    A class designed to capture gradient information
-    in a resource efficient manner. It attempts to
-    get a reasonable answer to the question of
-
-    "If these tensor entries were actually zero,
-    rather than sparse, what would the k largest
-    gradients be?"
-
-    It does this by Stochastically sampling from
-    the gradient space, storing the largest samples,
-    and applying a decay over time.
-
-    It only works well on relatively sparse models.
-    """
-    @property
-    def index(self):
-        row = self._backend.sparse.storage.row()
-        col = self._backend.sparse.storage.col()
-        return torch.stack([row, col], dim=0)
-
-    def required_stochastic_samples(self, L, N):
-        
-        ### A manually calculated helper funciton. The result is the number of 
-        ### stochastic samples it is expected to require to get L distinct quantities out of
-        ### N choices, assuming replacement allowed and unique reduced.
-     
-        p = 1/N #Probability of picking a particular item
-        return math.log(1-L*p, 1-p)
-        
-    def __init__(self,
-                operator: Callable,
-                max_quantity: int,
-                decay_constant: float  = 0.95,
-                suppress_live: Optional[bool] = True,
-                hysteresis: int = 100,
-    ):
-        """
-
-        :param operator: A callable. Will be fed first a SparseTensor, followed by any args and kwargs
-        :param max_quantity: The maximum number of sparse indices to retain results for.
-        :param decay_constant: the rate at which the running average decays away, if this was dense.
-        """
-
-        super().__init__()
-
-        assert callable(operator)
-        assert isinstance(max_quantity, int)
-        assert isinstance(decay_constant, float)
-        assert isinstance(suppress_live, bool)
-
-        #Store constants
-        self.operator = operator
-        self.quantity = max_quantity
-        self.decay_rate = decay_constant
-        self.suppress = suppress_live
-
-        #Setup result storage.
-
-        self._backend = None
-
-        #Setup optimization
-        self._historical = None
-        self._hysteresis = hysteresis
-    def forward(self, sparse, *args, **kwargs):
-        
-        
-        numel = sparse.size(0)*sparse.size(1)        
-        stochastic_samples = self.required_stochastic_samples(self.quantity, numel)
-        stochastic_samples = (1+math.sqrt(numel))*stochastic_samples #Padding for variation.
-        
-        
-        if stochastic_samples > numel:
-            #It is cheaper in memory, in theory, to run as a pseudo-dense capture
-            sampler = self.dense_capture(sparse.size(0), sparse.size(1))
-        else:
-            #Stochastic capture is the way to go
-            sampler = self.sparse_capture(sparse.size(0), sparse.size(1))
-            
-        def hook(gradients):
-            
-            
-            
-
-        assert isinstance(sparse, torch_sparse.SparseTensor)
-        if self.suppress:
-            #Suppressed selection will now occur.
-
-
-        if sparse.sparsity() < 0.5:
-            #Not very sparse. Mode will switch to denselike calculation mode,
-
-            row_index = torch.arange(sparse.size(0), device=sparse.device())
-            col_index = torch.arange(sparse.size(1), device=sparse.device())
-            true_index = torch.meshgrid([row_index, col_index])
-            values = torch.zeros([sparse.size(0), sparse.size(1)], device=sparse.device())
-            sampler =
-
-
-
-
-
-
-
-
-        #Get the excluded values if relavent
-        if self.suppress:
-
-
-            row = sparse.storage.row()
-            col = sparse.storage.col()
-            src_index = torch.stack([row, col])
-
-
 
 
 
@@ -368,73 +252,6 @@ class SparseParameter(nn.Module):
             if sparse_length > self.total_inactive:
                 return False
             return True
-    def capture(self,
-                callback: Callable,
-                quantity: Optional[int] = None,
-                rel_percentage: Optional[float] = None,
-                abs_percentage: Optional[float] = None,
-                threshold: Optional[float] = None,
-                include_dead: Optional[bool] = True,
-                include_live: Optional[bool] = False,
-                ):
-        """
-
-        A capture driver class. If called, based on the parameters provided
-        the next execution will capture the sparse backpropogation gradients to
-        enable execution of algorithms like RigL. In particular, on the next
-        monitored backwards call, the N largest gradients are computed, their
-        indices found, and the results are then shoved into callback.
-
-        Multiple modes may be executed at once. These will operate in parallel, but
-        will tend to find the same results. Fine tuning may be useful.
-
-        :param callback: The callable to be called when the capture is made.
-
-        :param quantity: The quantity of indices to capture. Unioned with rel, abs percentage,
-            threshold
-        :param rel_percentage: How many captures to make with respect to the active parameters.
-            Unioned with respect to quantity, abs_percentage, threshold
-        :param abs_percentage: How many captures to make with respect to the total parameters.
-            Unioned with respect to quantity, rel_percentage, threshold
-        :param threshold: Return all items with gradients above a threshold.
-            Unioned with respect to quantity, rel_percentage, abs_percentage.
-
-        :param include_dead:
-            Whether to include connections which would not be propogated back to the sparse case.
-            Unioned with include_live
-        :param include_live:
-            Whether to include connections which would be propogated back in the sparse case.
-            Unioned with include_dead
-        """
-
-        has_set_capture_flag = False
-        capture_quantity = 0
-        capture_threshold = None
-        if isinstance(quantity, int):
-            assert quantity >= 0
-            capture_quantity = quantity
-            has_set_capture_flag = True
-
-        if isinstance(rel_percentage, float):
-            assert rel_percentage >= 0 and rel_percentage <= 100
-            quantity = round(self.active_index * rel_percentage / 100)
-            capture_quantity = max(self._capture_quantity, quantity)
-            has_set_capture_flag = True
-        if isinstance(abs_percentage, float):
-            assert abs_percentage >= 0 and abs_percentage <= 100
-            quantity = round(self.total_param_space * abs_percentage / 100)
-            capture_quantity = max(self._capture_quantity, quantity)
-            has_set_capture_flag = True
-
-        if isinstance(threshold, int):
-            assert threshold >= 0
-            threshold = threshold
-            has_set_capture_flag = True
-
-        if has_set_capture_flag is False:
-            raise ValueError("No capture option was chosen")
-
-
 
 
 
@@ -475,21 +292,5 @@ class SparseParameter(nn.Module):
         self.active_index = torch.empty([0],)
         self.inactive_index = torch.arange(reservation)
 
-        #Start flags and event slogs
+        #Start flags and events
         self.suppressing_grow_warning = False
-        self._capture_quantity = None
-        self._capture_dead = False
-        self._capture_live = False
-        self._threshold = None
-        self._callback = None
-
-    def matmul(self, other: torch.Tensor):
-        """
-
-        Performs a capture monitored matrix multiply. When a capture is prepped,
-
-
-        :param other: A dense tensor to multiply
-        :return: A dense tensor. The result of matrix mulplication
-        """
-        assert torch.is_tensor(other), "Second element must be dense tensor"
