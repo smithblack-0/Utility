@@ -32,17 +32,49 @@ class StochasticSubSampler(nn.Module):
         is shorter.
     top_values: The result_quantity top values, or the so far discovered top values.
         Whichever is shorter.
+    -- methods---
 
+    forward: Performs registered operation
+    pop_tk: gets the top k gradients, up to the limit, and releases the
+        running average for these entries.
     """
     @property
-    def top_indices(self):
-        active_quantity = (self._result_value >= self.fill).sum()
-        return self._result_index[:active_quantity]
+    def active(self):
+        return (self._result_value >= self.fill).sum()
+    @property
+    def indices(self):
+        return self._result_index[:self.active]
 
     @property
-    def top_values(self):
-        active_quantity = (self._result_value >= self.fill).sum()
-        return self._result_value[:active_quantity]
+    def values(self):
+        return self._result_value[:self.active]
+    def pop_tk(self, k):
+        """
+        pops the top k entries, up to the storage limit.
+        These are returned, and the items deactivated.
+
+        :return:
+            tensor index of shape (k, 2) and type int64
+            tensor value of shape (k) and type float32, representing the gradients so seen.
+        """
+
+        if self.active > k:
+            k = self.active
+        popped_indices, unpopped_indices = self._result_index[:k], self._result_index[k:]
+        popped_values, unpopped_values = self._result_value[:k], self._result_value[k:]
+
+        new_indices = torch.empty((k, 2), dtype=torch.int64, device=self.device())
+        new_values = torch.full((k,), -1 + self.fill, dtype=torch.float32, device=self.device())
+
+        new_indices = torch.concat([unpopped_indices, new_indices], dim=0)
+        new_values = torch.concat([unpopped_values, new_values], dim=0)
+
+        self._result_value = new_values
+        self._result_index = new_indices
+
+        return popped_indices, popped_values
+
+
 
     def __init__(self,
                  operator: Callable,
@@ -86,7 +118,7 @@ class StochasticSubSampler(nn.Module):
         self.decay_constant = decay_constant
         self.mask = mask_active
 
-        # Setup result storage.
+        # Setup result storage. Note that filling a value with a result less than fill will deactivate it.
         self._result_index = torch.full([result_quantity, 2], -1, dtype=torch.int64, device=device)
         self._result_value = torch.full([result_quantity], -1 + self.fill, dtype=torch.float32, device=device)
 
@@ -157,7 +189,7 @@ class StochasticSubSampler(nn.Module):
         index = torch.randint(0, numel, [sample_size], device=device, dtype=torch.int64)
         if self.mask:
             mask = sparse.storage.row()*sparse.size(0) + sparse.storage.col()
-            mask = (index.unsqueeze(0) == mask.unsqueeze(-1)).any(dim=-1).logical_not()
+            mask = (index.unsqueeze(0) == mask.unsqueeze(-1)).any(dim=0).logical_not()
             selector = torch.arange(index.shape[0], device=device).masked_select(mask)
             index = index[selector]
 
@@ -168,14 +200,14 @@ class StochasticSubSampler(nn.Module):
         boundaries = index.max(dim=0)
         index, _ = torch_sparse.coalesce(index, None, boundaries[0], boundaries[1])
 
-        # Make the accumulator, and attach it's hook
         if self.mask:
-            #Of the region I am responsible for updating, what percent is actually
-            #being watched.
+            #Of the region I am responsible for tracking, figure out what percent is actually
+            #being montored.
             fractional_sparsity = index.shape[0] / (numel -sparse.nnz() + 1e-4)
         else:
             fractional_sparsity = index.shape[0]/numel
 
+        # Make the accumulator, and attach its hook
         accumulator = torch.full([index.shape[0]], self.fill, device=device, requires_grad=True)
         accumulator = self.attach_hook(torch.stack([row, col]), accumulator, fractional_sparsity)
 
