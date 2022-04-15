@@ -23,7 +23,7 @@ class ParamMemPool(nn.Module):
         Converts a mask to its index form
 
         :param mask: A mask whose last dimension we wish to convert
-        :return: A 1D list of indices
+        :return: A list of indices.
         """
 
         indices = torch.arange(mask.shape[-1])
