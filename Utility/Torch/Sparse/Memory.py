@@ -29,6 +29,7 @@ class ParamMemPool(nn.Module):
         indices = torch.arange(mask.shape[-1])
         indices = indices.masked_select(mask)
         return indices
+    
     def _get_addresses(self, index):
         """
         Lookup the actual addresses in memory corrosponding to a particular index sequence
@@ -53,7 +54,7 @@ class ParamMemPool(nn.Module):
         """
 
         # Create the index found boolean matrix
-        self_index = self.index  # (M, 3)
+        self_index = self._index  # (M, 3)
         self_index.unsqueeze(0)  # (1, M, 3)
         index_broadcast = index.unsqueeze(1)  # (N, 1, 3)
         index_found_bool = (self_index == index_broadcast).all(dim=-1)  # (N, M)
@@ -76,15 +77,15 @@ class ParamMemPool(nn.Module):
 
         #Get length inactive indices, and find the corrosponding addresses to activate
         length = index.shape[0]
-        inactive = self.allocated == False
+        inactive = self._allocated == False
         addresses = self._mask_2_addresses(inactive)
         if addresses.shape[0] < length:
             raise MemoryError("Amount of remaining parameter memory is less than size of allocation")
         addresses = addresses[:length]
 
         #Go set these as active, and return
-        self.allocated[addresses] = True
-        self.index[addresses] = index[:]
+        self._allocated[addresses] = True
+        self._index[addresses] = index[:]
 
         return addresses
     def _release_addresses(self, addresses):
@@ -92,7 +93,7 @@ class ParamMemPool(nn.Module):
         Simply releases a sequence of held addresses.
         """
 
-        self.allocate[addresses] = False
+        self._allocated[addresses] = False
 
     def _set_addresses(self, index, value):
         """
@@ -107,18 +108,50 @@ class ParamMemPool(nn.Module):
         #Get address locations for currently located entries, along with anything not in memory
         with torch.no_grad()
             partition = self._get_partition(index)
+            found_index, missing_index = partition(index)
             if value is None:
-                #Find the entries that exist.
-                found_index, missing_index = partition(index)
+                #Find the entries that exist. Then free them
                 found_addresses = self._get_addresses(found_index)
                 self._release_addresses(found_addresses)
+                return None
+            
+            #Store values which have locations already assigned
+            found_values, missing_values = partition(value)
+            found_addresses = self._get_addresses(found_index)
+            self._values[found_addresses] = found_values   
+            
+            #Handle values without index locations.
+            if missing_index.shape[0] > self.free:
+                #Insufficient memory exists. Enter sort-discard mode. 
+                
+                values = torch.concat([self.values, missing_values])
+                index = torch.concat([self.index, missing_index])
+                activation = self.activation(values)
+                sort_indices = torch.argsort(activation)
+                
+                values = values[sort_indices]
+                index = index[sort_indices]
+                
+                values = values[:self.length]
+                index = index[:self.length]
+                
+                self._set_addresses(index, values)
+                
+                
+                
+                
+                
+                
+                
+                
             else:
 
-                found_index, missing_index = partition(index)
                 found_value, missing_value = partition(value)
                 found_addresses = self._get_addresses(found_index)
 
-                #Allocate memory for the unallocated addresses
+       .
+                     
+                
                 new_addresses = self._allocate_index(missing_index)
 
                 #Make final dispatch tensor
@@ -128,71 +161,45 @@ class ParamMemPool(nn.Module):
 
                 #Store in memory
 
-                self.index[final_addresses] = final_index
-                self.values[final_addresses] = final_values
-
-    ### Sparse rebuild method ###
-    def update(self):
-        for key in self.sparse.items():
-            index = self.get_index(key)
-            value = self.get_values(key)
-            self.sparse[key] = torch_sparse.SparseTensor(row=index[1], col=index[2], value=value)
-
-
+                self._index[final_addresses] = final_index
+                self._values[final_addresses] = final_value
+    ### Properties ###
+    @property
+    def free(self):
+        return torch.logical_not(self._allocated).sum()
+    @property
+    def used(self):
+        return self._allocated.sum()
     ### External interface methods ###
-    def set(self, id, index, value):
-        """
-        Sets items associated with the given id
-        to value.
-
-        :param id: The id to set to
-        :param index: The index to set to
-        :param value: The value to set to
-        """
-
-        #Transform into full coordinate notation
-        new_index = torch.full([index.shape[0], 1], id)
-        new_index = torch.concat([new_index, index], dim=-1)
-
-        #Set items, then update parameter
-        self._set_addresses(new_index, value)
-
-    def get_index(self, id):
-        """ Given an id, returns the index entries associated"""
-
-        index_row = self.index[:, 0]
-        index_mask = index_row == id
-        index_addresses = self._mask_2_addresses(index_mask)
-        return self.index[index_addresses, 1:] #Strips off the index metainfo
-
-    def get_values(self, id):
-        """ Given an id, returns the value entries associated"""
-        index_row = self.index[:, 0]
-        index_mask = index_row == id
-        index_addresses = self._mask_2_addresses(index_mask)
-        return self.values[index_addresses]
-
-    def get_sparse(self, id):
-        """ Given an id, returns the sparse entries associated"""
-        if not hasattr(self, 'sparse'):
-            self.sparse = {}
-        if id not in self.sparse:
-            self.sparse[id] = self._update(id)
-        return self.sparse[id]
-
-    ### Tracking methods ###
-
-    def get_id(self):
-        """ Returns a unique id for a parameter"""
-        count = self.counter.item()
-        self.counter += 1
-        return count
-
+    def __setitem__(self, index, value):
+        
+        #Validation
+        assert torch.is_tensor(index)
+        assert index.dim() == 2
+        assert torch.is_tensor(value) or value is None
+        if value is not None:
+            assert value.dim() == 1
+            assert value.shape[0] == index.shape[0]
+        
+        #Implimentation
+        self._set_addresses(index, value)
+        
+        
+    def __getitem__(self, index):
+        #Validation
+        assert torch.is_tensor(index)
+        assert index.dim() == 2
+        
+        partition = self._partition(index)
+        valid_index, _ = partition(index)
+        addresses = self._get_addresses(valid_index)
+        return self.values[addresses]
+    
     def __init__(self,
                  quantity: int,
-                 capture_quantity: int,
                  device: torch.device,
                  dtype: torch.dtype,
+                 overflow_behavior: str = "drop smallest",
                  requires_grad: bool = True):
         super().__init__()
 
@@ -205,13 +212,9 @@ class ParamMemPool(nn.Module):
                                    dtype=dtype,
                                    device=device,
                                    requires_grad=requires_grad)
-        self.register_buffer('allocated', allocated)
-        self.register_buffer('index', index)
-        self.register_parameter('values', nn.Parameter(values, requires_grad=requires_grad))
-
-        #Create the parameter tracker and counter.
-        self.register_buffer('counter', torch.tensor(0))
-        self.params = nn.ModuleDict()
+        self.register_buffer('_allocated', allocated)
+        self.register_buffer('_index', index)
+        self.register_parameter('_values', nn.Parameter(values, requires_grad=requires_grad))
 
         #Store some values
         self.dtype = dtype
