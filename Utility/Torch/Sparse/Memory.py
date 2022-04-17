@@ -371,16 +371,18 @@ class StorageModule(nn.Module):
 
 
             new_values = values.masked_select(is_new_a)
-            map_to_addresses, addresses  = self.backend.request_addresses(self, new_values)
+            if new_values.shape[0] > 0:
+                map_to_addresses, addresses  = self.backend.request_addresses(self, new_values)
+                self.backend[addresses] = map_to_addresses[new_values] #Store
 
-
+            #Generate commit statements
             compression_index = index
             compression_address = self._addr.masked_select(is_set_b)
 
-            compression_index = torch.concat([compression_index, map_to_addresses(index)], dim=0)
-            compression_address = torch.concat([compression_address, addresses])
+            if new_values.shape[0] > 0:
+                compression_index = torch.concat([compression_index, map_to_addresses(index)], dim=0)
+                compression_address = torch.concat([compression_address, addresses])
 
-            self.backend[addresses] = map_to_addresses[new_values] #Store
             self.commit(compression_index[:, 0], compression_index[:, 1], compression_address)
     def commit(self, row, col, addr):
         """
@@ -439,9 +441,9 @@ class StorageModule(nn.Module):
 
             broadcast_a = addr.unsqueeze(-1) #(M, 1)
             broadcast_b = self._addr.unsqueeze(0) #(1, N)
-            existance_bool = broadcast_a == broadcast_b  #(M, N)
+            existence_bool = broadcast_a == broadcast_b  #(M, N)
 
-            released_addr = existance_bool.any(dim=0)
+            released_addr = existence_bool.any(dim=0)
             retained_addr = torch.logical_not(released_addr)
             retained_indices = torch.arange(retained_addr.shape[0], device=self.device)
             retained_indices = retained_indices.masked_select(retained_addr)
