@@ -1,5 +1,5 @@
 import uuid
-from typing import Optional, Callable, Final, Sequence, Union, Tuple, Dict
+from typing import Optional, Callable, Final, Sequence, Union, Tuple, Dict, List
 
 import torch
 import numpy as np
@@ -213,6 +213,23 @@ class StorageModule(nn.Module):
         index = mask.matmul(index).squeeze()
         return index
 
+    ### Helper property
+
+    #Note that in order for distributed broadcast to work
+    #tensors must be the same shape on all objects. To support this,
+    #the indices are stored as a mask of memory length, and synthesized
+    #into numbers on the fly.
+    @property
+    def _addr(self):
+        """ Gets the current address"""
+        return self._mask2index(self._addr_mask)
+    @_addr.setter
+    def _addr(self, new_address):
+        address = torch.full([self._addr_mask.shape[0]], False, device=self.device)
+        address[new_address] = True
+        self._addr_mask = address
+
+
     ### State modifiers
     #
     # These are the ONLY functions in the class which are allowed to
@@ -378,17 +395,17 @@ class StorageModule(nn.Module):
 
         super().__init__()
 
-
+        assert isinstance(backend, ParamServer)
 
         # Store persistent placeholders.
         self._rowptr = torch.empty([0], dtype=torch.int64, device=device)
         self._col = torch.empty([0], dtype=torch.int64, device=device)
-        self._addr = torch.empty([0], dtype=torch.int64, device=device)
-        self._id = torch.Tensor(hash(uuid.uuid1()))
+        self._addr_mask = torch.full([backend.total], False, device=device)
+        self._id = torch.Tensor(hash(uuid.uuid1()), device=device, dtype=torch.int32)
 
         self.register_buffer('_rowptr', self._rowptr)
         self.register_buffer('_col', self._col)
-        self.register_buffer('_addr', self._addr)
+        self.register_buffer('_addr_mask', self._addr_mask)
         self.register_buffer('_id', self._id)
 
         #store backend and default priority
@@ -496,13 +513,14 @@ class ParamServer(nn.Module):
 
 
         pass
-    def set(self, id: torch.Tensor,
+    def _set(self, id: torch.Tensor,
             set_addr: torch.Tensor,
             set_values: Union[torch.Tensor, None],
             set_priority: Union[torch.Tensor, None],
             set_write_enabled: Union[torch.Tensor, None],
             set_free_enabled: Union[torch.Tensor, None])\
-                                                ->  Tuple[torch.Tensor, torch.Tensor]:
+                                                ->  Tuple[List[Callable],
+                                                    Tuple[torch.Tensor, torch.Tensor]]:
         """
 
         The set action of the backend. set_addr is required, and must be an int64
@@ -599,11 +617,10 @@ class ParamServer(nn.Module):
                 self._free_enabled[can_write_addr] = set_free_enabled
             transaction.append(set)
 
-        #All verification completed successfully. Commit the transaction, and
-        #return the status.
-        for item in transaction:
-            item()
-        return set_addr, torch.arange(set_addr.shape[0])
+        #All verification and construction complete. Return the pending
+        #transaction, and the status
+
+        return transaction, (set_addr, torch.arange(set_addr.shape[0]))
 
 
 
