@@ -456,8 +456,11 @@ class ParamServer(nn.Module):
         return self._active.sum()
 
     ### Basic query subactions ###
-    def release(self, id: torch.Tensor,
-                release_addr: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _release(self,
+                 environment: Dict,
+                 id: torch.Tensor,
+                release_addr: torch.Tensor) -> \
+            Tuple[Dict, Tuple[torch.Tensor, torch.Tensor]]:
         """
 
         Releases addresses, if this is permitted. ID and
@@ -470,8 +473,11 @@ class ParamServer(nn.Module):
         :param id: The id the query came from
         :param release_addr: The addresses to release. 1D float64 tensor
         :returns:
-            remaining_addresses,
-            remaining_indexmask
+            transaction,
+            released_addresses,
+            (remaining_addresses,
+            remaining_indexmask)
+
         """
 
         #Validation
@@ -486,26 +492,26 @@ class ParamServer(nn.Module):
         assert (release_addr >= 0).all()
         assert (release_addr < self.total)
 
-        if (self._ids[release_addr] != id).any():
+        if (environment['id']  != id).any():
             raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
 
 
         #Freeing. Figure out what indices can be freed, then set those as
         #freed and reset all flags. For the ones that cannot be freed,
         #figure out what the addresses were and return them, plus the
-        #indexmask
+        #indexmask. Create the transaction, and return it with the status
 
-        can_release = self._free_enabled[release_addr]
+        can_release = environment['free_enabled'][release_addr]
         cannot_release = torch.logical_not(can_release)
 
         to_release = release_addr.masked_select(can_release)
         not_released = release_addr.masked_select(cannot_release)
 
-        self._active[to_release] = False
-        self._write_enabled[to_release] = False
-        self._ids[to_release] = -1
+        environment['active'][to_release] = False
+        environment['write_enabled'][to_release] = False
+        environment['id'][to_release] = -1
 
-        return not_released, self._mask2index(not_released)
+        return environment, (not_released, self._mask2index(not_released))
 
 
 
@@ -513,13 +519,15 @@ class ParamServer(nn.Module):
 
 
         pass
-    def _set(self, id: torch.Tensor,
+    def _set(self,
+            environment: Dict,
+            id: torch.Tensor,
             set_addr: torch.Tensor,
             set_values: Union[torch.Tensor, None],
             set_priority: Union[torch.Tensor, None],
             set_write_enabled: Union[torch.Tensor, None],
             set_free_enabled: Union[torch.Tensor, None])\
-                                                ->  Tuple[List[Callable],
+                                                ->  Tuple[Dict,
                                                     Tuple[torch.Tensor, torch.Tensor]]:
         """
 
@@ -551,7 +559,8 @@ class ParamServer(nn.Module):
         assert (set_addr >= 0).all()
         assert (set_addr < self.total).all()
 
-        if (self._ids[set_addr] != id).any():
+
+        if (environment['id'] != id).any():
             raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
 
 
@@ -565,24 +574,21 @@ class ParamServer(nn.Module):
 
         #Once all items check out, a loop applies them all.
 
-        transaction = []
 
-        if self._write_enabled is not None:
+        if set_write_enabled is not None:
             assert torch.is_tensor(set_write_enabled)
             assert set_write_enabled.dim() == 1
             assert set_write_enabled.shape[0] == set_addr.shape[0]
             assert set_write_enabled.dtype == torch.bool
 
-            def set():
-                self._write_enabled[set_addr] = set_write_enabled
-            transaction.append(set)
+            environment['write_enabled'][set_addr] = set_write_enabled
 
             #Overwrite enabled
             can_write_mask = torch.full([set_addr.shape[0]], True)
             can_write_addr = set_addr.masked_select(can_write_mask)
         else:
             #No overwrite. Obey access control.
-            can_write_mask = self._write_enabled[set_addr]
+            can_write_mask = environment['write_enabled']
             can_write_addr = set_addr.masked_select(can_write_mask)
 
         if set_values is not None:
@@ -593,9 +599,8 @@ class ParamServer(nn.Module):
 
             #Reduce to the items which we can write to
             set_values = set_values.masked_select(can_write_mask)
-            def set():
-                self._memory[can_write_addr] = set_values
-            transaction.append(set)
+            environment['memory'][can_write_addr] = set_values
+
         if set_priority is not None:
             assert torch.is_tensor(set_priority)
             assert set_priority.dim() == 1
@@ -603,9 +608,8 @@ class ParamServer(nn.Module):
             assert set_priority.dtype == torch.float32
 
             set_priority = set_priority.masked_select(can_write_mask)
-            def set():
-                self._priority[can_write_addr] = set_priority
-            transaction.append(set)
+            environment['priority'][can_write_addr] = set_priority
+
         if set_free_enabled is not None:
             assert torch.is_tensor(set_free_enabled)
             assert set_free_enabled.dim() == 1
@@ -613,24 +617,62 @@ class ParamServer(nn.Module):
             assert set_free_enabled.dtype == torch.bool
 
             set_free_enabled = set_free_enabled.masked_select(can_write_mask)
-            def set():
-                self._free_enabled[can_write_addr] = set_free_enabled
-            transaction.append(set)
+            environment['free_enabled'][can_write_addr] = set_free_enabled
 
         #All verification and construction complete. Return the pending
         #transaction, and the status
+        return environment, (set_addr, torch.arange(set_addr.shape[0]))
 
-        return transaction, (set_addr, torch.arange(set_addr.shape[0]))
+    def _new(self,
+             environment: Dict,
+             id: torch.Tensor,
+             new_values: torch.Tensor,
+             new_priority: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Create new values, if possible. It may end up being the case that
+        insufficient memory remains in order to do this. If this is the case,
+        we take the proposed new values with their priority, sort the values
+        and addresses by how large they tend to be, release enough small addresses
+        to hold the new values, and return the resulting transaction.
+
+        :param environment: The current environment.
+        :param id: The id this is coming from
+        :param new_values: What new values to set
+        :param new_priority: The priorities to go with the values.
+        :return:
+        """
+
+        #Validation
+        assert torch.is_tensor(id)
+        assert id.dtype == torch.int32
+        assert id.dim() == 0
+
+        assert torch.is_tensor(new_values)
+        assert new_values.dim() == 1
+        assert new_values.dtype == environment['memory'].dtype
+
+        assert torch.is_tensor(new_priority)
+        assert new_priority.dim() == 1
+        assert new_priority.dtype == environment['priority'].dtype
+
+        assert new_values.shape[0] == new_priority.shape[0]
+
+        # Transaction generation.
+        if torch.logical_not(environment['active']).sum() >= new_values.shape[0]:
+            #Sufficient memory exists for a straightforward activation
+            pass
+
+        elif torch.logical_not(environment['active']).sum() + environment['free_enabled'].sum() >= new_values.shape[0]:
+            #Insufficient memory exists. But I can free enough. Do so.
+            pass
+
+        else:
+            raise MemoryError("Insufficient freeable memory remains")
 
 
 
 
-
-        pass
-    def new(self, id, new_values, new_priority) -> Tuple[torch.Tensor, torch.Tensor]:
-        pass
-
-    def get(self, id, get_addr, get_values, get_priority)-> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get(self,  id, get_addr, get_values, get_priority)-> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         pass
 
     def transact(self,
@@ -670,8 +712,8 @@ class ParamServer(nn.Module):
         one go, and resolving in the following sequence:
 
         1) Release
-        2) Set
-        3) New
+        2) New
+        3) Set
         4) Get
 
         The transaction will return a sequence of status dictionaries properties
@@ -701,19 +743,40 @@ class ParamServer(nn.Module):
             get_status: The items which have been gotten
         """
 
-        release_status = None
-        set_status = None
-        new_status = None
-        get_status = None
+        #This could use a little explanation.
+        #
+        #To avoid any corruption, we create a copy of the entire
+        #runtime environment and edit that. Once we are sure that
+        #we have not made any mistakes, we go ahead and copy the results
+        #into our actual backend.
+        with torch.no_grad():
+            simulated_environment = {
+                'transaction' : [],
+
+                'active' : self._active.clone(),
+                'id' : self._ids.clone(),
+
+                'free_enabled' : self._free_enabled,
+                'write_enabled' : self._write_enabled,
+
+                'memory' : self._memory,
+                'priority' : self._priority
+            }
+
+
+            release_status = None
+            set_status = None
+            new_status = None
+            get_status = None
 
         if release_addr is not None:
-            release_status = self.release(id, release_addr)
-        if set_addr is not None:
-            set_status = self.set(id, set_addr, set_values, set_priority, set_write_enabled, set_free_enabled)
+            simulated_environment, release_status = self._release(simulated_environment, id, release_addr)
         if new_values is not None:
-            new_status = self.new(id, new_values, new_priority)
+            simulated_environment, new_status = self._new(simulated_environment, id, new_values, new_priority)
+        if set_addr is not None:
+            simulated_environment, set_status = self._set(simulated_environment, id, set_addr, set_values, set_priority, set_write_enabled, set_free_enabled)
         if get_status is not None:
-            get_status = self.get(id, get_addr, get_values, get_priority)
+            simulated_environment, get_status = self._get(simulated_environment, id, get_addr, get_values, get_priority)
 
         return release_status, set_status, new_status, get_status
     def __init__(self,
@@ -748,7 +811,7 @@ class ParamServer(nn.Module):
         self.register_buffer('_write_enabled', self._write_enabled)
 
 
-        #Create parameters memory, priority
+        #Create memory and module storage
         self._memory = torch.empty([quantity],
                                    dtype=dtype,
                                    device=device,
@@ -760,6 +823,7 @@ class ParamServer(nn.Module):
 
         self._memory = nn.Parameter(self._memory, requires_grad=requires_grad)
         self._priority = nn.Parameter(self._priority, requires_grad=False)
+        self._module_storage = nn.ModuleList()
 
         #Store persistant
         self._dtype = dtype
