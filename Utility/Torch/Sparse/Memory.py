@@ -1,293 +1,11 @@
-from typing import Optional, Callable, Final, Sequence, Union
+import uuid
+from typing import Optional, Callable, Final, Sequence, Union, Tuple, Dict
 
 import torch
 import numpy as np
 import torch_sparse
 from torch import nn
 
-
-class COOParamMemory(nn.Module):
-    """
-
-    Creates a new memory bank for a sparse-dynamic environment based on the
-    provided parameters. This is designed to enable transparent interfacing with
-    existing optim frameworks. The instance exposes a __setitem__ and __getitem__ method
-    which allows the assigning of COO coordinates to the memory backend. If coordinates
-    and parameters are later removed,  or added, since the underlying parameters remain
-    around torch optim's remain happy.
-
-    For best performance, only trim parameter which have minimal contribution to the
-    model, to prevent complications due to optim persistant values. Also,
-
-    -- methods --
-
-    __getattr__:
-    __setattr__:
-
-
-    A location in which parameters and associated tensors may end up being stored.
-
-    -- methods --
-
-    create(size, dtype): creates a new parameter pool of the indicated
-    register(SparseParameter): Mutually registers a sparse parameter with the pool
-    """
-
-    ### Memory management functions ###
-    def _mask_2_addresses(self, mask):
-        """
-        Converts a mask to its index form
-
-        :param mask: A mask whose last dimension we wish to convert
-        :return: A list of indices.
-        """
-
-        indices = torch.arange(mask.shape[-1])
-        indices = indices.masked_select(mask)
-        return indices
-
-    def _get_addresses(self, index):
-        """
-        Lookup the actual addresses in memory corrosponding to a particular index sequence
-
-        Does not check if the index entry exists.
-        """
-
-        # Create the index found boolean matrix
-        self_index = self.index  # (M, 3)
-        self_index.unsqueeze(0)  # (1, M, 3)
-        index_broadcast = index.unsqueeze(1)  # (N, 1, 3)
-        index_found_bool = (self_index == index_broadcast).all(dim=-1)  # (N, M)
-        addresses = self._mask_2_addresses(index_found_bool)  # (N, 1)
-        addresses = addresses.squeeze()
-
-        return addresses
-
-    def _get_partition(self, index):
-        """
-        Returns a function which will split any incoming
-        tensorlike into regions of in, or not in, memory
-        """
-
-        # Create the index found boolean matrix
-        self_index = self._index  # (M, 3)
-        self_index.unsqueeze(0)  # (1, M, 3)
-        index_broadcast = index.unsqueeze(1)  # (N, 1, 3)
-        index_found_bool = (self_index == index_broadcast).all(dim=-1)  # (N, M)
-
-        # Create the partition function. This splits the input into the region where addresses
-
-        def partition(item):
-            index_found_anywhere = index_found_bool.any(dim=-1)
-            index_not_found = torch.logical_not(index_found_anywhere)
-            return item[index_found_anywhere], item[index_not_found]
-
-        return partition
-
-    def _allocate_index(self, index):
-        """
-        Allocates a quantity of memory to index
-
-        :param index: the index to open up
-        :return: The addresses for the index
-        """
-
-        # Get length inactive indices, and find the corrosponding addresses to activate
-        length = index.shape[0]
-        inactive = self._allocated == False
-        addresses = self._mask_2_addresses(inactive)
-        if addresses.shape[0] < length:
-            raise MemoryError("Amount of remaining parameter memory is less than size of allocation")
-        addresses = addresses[:length]
-
-        # Go set these as active, and return
-        self._allocated[addresses] = True
-        self._index[addresses] = index[:]
-
-        return addresses
-
-    def _release_addresses(self, addresses):
-        """
-        Simply releases a sequence of held addresses.
-        """
-
-        self._allocated[addresses] = False
-
-    def _set_addresses(self, index, value):
-        """
-
-        sets the addresses in memory corrosponding to a particular index -value sequence
-
-        if value is none, frees that memory.
-        If index entries are present that have not been allocated before, allocate them
-        If index entries are present that have been allocated, set them.
-        """
-
-        # Get address locations for currently located entries, along with anything not in memory
-        with torch.no_grad():
-            partition = self._get_partition(index)
-            found_index, missing_index = partition(index)
-
-            # Release memory and terminate if we are freeing memory.
-            if value is None:
-                # Find the entries that exist. Then free them
-                found_addresses = self._get_addresses(found_index)
-                self._release_addresses(found_addresses)
-                return None
-
-            # We are setting memory. We need to handle the cases in which the
-            # amount remaining is insufficient, in which the memory is not
-            # allocated, and in which it is.
-
-            # Handle throw in case of not enough remaining memory
-            if self.overflow is False and missing_index.shape[0] > self.free:
-                raise MemoryError("Insufficient memory remaining to store index")
-
-            # Store values which have locations already assigned
-            found_values, missing_values = partition(value)
-            found_addresses = self._get_addresses(found_index)
-            self._values[found_addresses] = found_values
-
-            # Handle case in which insufficient memory remains, and we
-            # are not
-            if missing_index.shape[0] > self.free:
-
-                # Insufficient memory exists. Enter sort-discard mode.
-                values = torch.concat([self.values, missing_values])
-                index = torch.concat([self.index, missing_index])
-                activation = self.activation(values)
-                sort_indices = torch.argsort(activation)
-
-                values = values[sort_indices]
-                index = index[sort_indices]
-
-                values = values[:self.length]
-                index = index[:self.length]
-
-                self._set_addresses(index, values)
-
-            else:
-
-                found_value, missing_value = partition(value)
-                found_addresses = self._get_addresses(found_index)
-                new_addresses = self._allocate_index(missing_index)
-
-                # Make final dispatch tensor
-                final_index = torch.concat([found_index, missing_index], dim=0)
-                final_addresses = torch.concat([found_addresses, new_addresses], dim=0)
-                final_values = torch.concat([found_value, missing_value], dim=0)
-
-                # Store in memory
-
-                self._index[final_addresses] = final_index
-                self._values[final_addresses] = final_values
-
-    ### Properties ###
-    @property
-    def free(self):
-        return torch.logical_not(self._allocated).sum()
-
-    @property
-    def used(self):
-        return self._allocated.sum()
-
-    ### External interface methods ###
-    def __setitem__(self, index, value, trust_input=False):
-        """
-        Accepts a COO index, and a tensor of values or none.
-        Sets memory to produce values when the appropriate
-        index is queried.
-
-        :param index: A COO index matching the shape of the backend and contained
-            within memory
-        :param value: The values to set. Must be a tensor of length index, or None. If
-            None, the memory will be freed.
-        :raises KeyError: If the index attempts to free values which are not in memory
-        :raises MemoryError: If the index attempts to set more value than there is memory for,
-            and triage is not active.
-        """
-
-        #Validation
-        if not trust_input:
-            assert torch.is_tensor(index)
-            assert index.dim() == 2
-            assert index.shape[1] == self.index.shape[1]
-            assert torch.is_tensor(value) or value is None
-
-            if value is not None:
-                assert value.dim() == 1
-                assert value.shape[0] == index.shape[0]
-
-            if value is None:
-                partition = self._get_partition(index)
-                in_memory, not_in_memory = partition(index)
-                if not_in_memory.shape[0] > 0:
-                    raise KeyError("Attempt to free indices which are not in memory")
-        #Setting
-        self._set_addresses(index, value)
-
-    def __getitem__(self, index):
-        """
-
-        Accepts a COO index, and a tensor of values or None
-        Sets the values at index to the items in values
-        If values was None, instead frees the memory at index
-
-        :param index: A COO tensor which is found entirely in memory
-        :return: The values corrosponding to the COO tensor
-        :raises: KeyError: If the COO index had values not in memory
-        """
-
-        assert torch.is_tensor(index)
-        assert index.dim() == 2
-        assert index.shape[1] == self.index.shape[1], "Shapes of instance and provide index were not the same"
-
-        partition = self._partition(index)
-        valid_index, invalid_index = partition(index)
-        if invalid_index.shape[0] > 0:
-            raise KeyError("Index provided with entries which do not exist", invalid_index)
-
-        addresses = self._get_addresses(valid_index)
-        return self.values[addresses]
-
-    def __init__(self,
-                 quantity: int,
-                 device: torch.device,
-                 dtype: torch.dtype,
-                 trim_overflow: Optional[bool] = None,
-                 overflow_activation: Optional[Callable] = None,
-                 requires_grad: bool = True):
-
-        # Start torch
-        super().__init__()
-
-        # Handle overflow defaults
-        if trim_overflow is None:
-            trim_overflow = True
-        if overflow_activation is None:
-            overflow_activation = torch.abs
-
-        # Store overflow parameters
-
-        self.overflow = trim_overflow
-        self.activation = overflow_activation
-
-        # Create the pool
-        allocated = torch.full([quantity], False)
-        index = torch.empty([quantity, 3],
-                            dtype=torch.int64,
-                            device=device)
-        values = torch.empty([quantity],
-                             dtype=dtype,
-                             device=device,
-                             requires_grad=requires_grad)
-        self.register_buffer('_allocated', allocated)
-        self.register_buffer('_index', index)
-        self.register_parameter('_values', nn.Parameter(values, requires_grad=requires_grad))
-
-        # Store some values
-        self.dtype = dtype
-        self.device = device
 
 
 class StorageModule(nn.Module):
@@ -312,25 +30,34 @@ class StorageModule(nn.Module):
         unit into memory.
     """
 
+    ### Id management ###
+    @property
+    def id(self):
+        return self._id
+
     ### Storage manager. ####
     @property
     def storage(self):
+        """ Get the proper underlying storage. Build it if needed"""
         if not hasattr(self, '_storage'):
             #Support for saving models. Automatically rebuilds storage if
             #needed.
+            with torch.no_grad():
+                rowptr = self._rowptr
+                col = self._col
 
-            rowptr = self._rowptr
-            col = self._col
-            value = self.backend[self._addr]
+                _, _, _, value = self._transact(get_addr=self._addr, get_values=True)
+                value, _, _, _ = value
 
-            self._storage = torch_sparse.SparseStorage(rowptr=rowptr,
-                                                       col = col,
-                                                       value=value,
-                                                       is_sorted=True)
+                self._storage = torch_sparse.SparseStorage(rowptr=rowptr,
+                                                           col = col,
+                                                           value=value,
+                                                           is_sorted=True)
         #Return cached entry
         return self._storage
     @storage.setter
     def storage(self, new_storage: torch_sparse.SparseStorage):
+        """ Set the storage to something else"""
         with torch.no_grad():
             #Get new index, new values
 
@@ -359,65 +86,55 @@ class StorageModule(nn.Module):
             is_set_b = existance_bool.any(dim=-1)
             is_gone_b = torch.logical_not(is_set_b)
 
-            #Release the unused memory, then set the values on the retained common portions.
 
-            self.backend[self._addr.masked_select(is_gone_b)] = None
-            self.backend[self._addr.masked_select(is_set_b)] = values.masked_select(is_set_a)
+            #Develop transaction parameters. This includes addresses to release,
+            #addresses and values to set, and new values and priorities.
 
-            #Request from the backend to provided addresses for the indicated values.
-            #It is up to the backend to decide which values will be allowed new addresses
-            #It will return the addresses, and a function which maps to the active addresses.
-            #Then, make the CSR compression features
-
-
+            release_addr = self._addr.masked_select(is_gone_b)
+            set_addr = self._addr.masked_select(is_set_b)
+            set_val = values.masked_select(is_set_a)
             new_values = values.masked_select(is_new_a)
-            if new_values.shape[0] > 0:
-                map_to_addresses, addresses  = self.backend.request_addresses(self, new_values)
-                self.backend[addresses] = map_to_addresses[new_values] #Store
+            new_priority = torch.full([new_values.shape[0]], self.default)
 
-            #Generate commit statements
-            compression_index = index
-            compression_address = self._addr.masked_select(is_set_b)
+            #Commit transaction. Store resulting address sequence
 
-            if new_values.shape[0] > 0:
-                compression_index = torch.concat([compression_index, map_to_addresses(index)], dim=0)
-                compression_address = torch.concat([compression_address, addresses])
+            release_status, set_status, new_status, _ = self._transact(
+                                  release_addr = release_addr,
+                                  set_addr = set_addr,
+                                  set_values = set_val,
+                                  new_values = new_values,
+                                  new_priority = new_priority)
 
-            self.commit(compression_index[:, 0], compression_index[:, 1], compression_address)
-    def commit(self, row, col, addr):
-        """
+            #Unwravel transaction. Transaction may approve or deny
+            #ANY portion of the attempt, including release, set
+            #or new.
+            #
+            # Assemble, using the resulting indexmask, the final
+            # index. The indexmask is a tensor of indices, meant
+            # to indicate whether the value in this position
+            # was successfully changed on the backend. Make
+            # an index out of the successful values, and thus
+            # current state.
 
-        Commits a particular row, col, addr sequence
-        to memory. This is the only function allowed
-        to change entries in the instance.
+            release_index = old_index[self._mask2index(is_gone_b)]
+            set_index = index[self._mask2index(is_set_a)]
+            new_index = index[self._mask2index(is_new_a)]
 
-        :param row: the row we are dealing with
-        :param col: the column entries
-        :param addr: the corrosponding addresses
-        :return:
-        """
-        #Build compression fixture, and perform sort.
+            release_addr, release_fail_indexmask = release_status
+            set_addr, set_success_indexmask = set_status
+            new_addr, new_success_indexmask = new_status
 
-        sort_permutation = torch.arange(row.shape[0], device=self.device)
-        sort_permutation = torch_sparse.SparseStorage(row=row,
-                                                      col=col,
-                                                      value=sort_permutation).value()
-        final_row = row[sort_permutation]
-        final_col = col[sort_permutation]
-        final_addr = addr[sort_permutation]
-        final_value = self.backend[final_addr]
+            release_index = release_index[release_fail_indexmask]
+            set_index = set_index[set_success_indexmask]
+            new_index = new_index[new_success_indexmask]
 
-        # Create the final storage, and store persistent quantities
+            final_addr = torch.concat([release_addr, set_addr, new_addr], dim=0)
+            final_index = torch.concat([release_index, set_index, new_index], dim=0)
 
-        self._storage = torch_sparse.SparseStorage(row=final_row,
-                                                   col=final_col,
-                                                   value=final_value,
-                                                   is_sorted=True)
+            #With the final index, and final address, completed, commit the current
+            #state to instance memory.
 
-        self._rowptr = self._storage.rowptr()
-        self._col = self._storage.col()
-        self._addr = final_addr
-
+            self._commit(final_index[:, 0], final_index[:, 1], final_addr)
 
     def release(self,
                 addr: torch.Tensor):
@@ -426,8 +143,10 @@ class StorageModule(nn.Module):
         Rebuilds storage with the given addresses released.
 
         Utilized primarily by the memory management backend
-        when it needs to reclaim memory from somewhere. Items which
-        are not found are not released.
+        when it needs to reclaim memory from somewhere.
+
+        A call to this is a declaration:
+        "Hey, you are not responsible for these addresses anymore"
 
         :param addr: A tensor, consisting of the addresses to release
         """
@@ -439,9 +158,9 @@ class StorageModule(nn.Module):
 
             #Figure out what addresses need to be retained, and the corrosponding indices
 
-            broadcast_a = addr.unsqueeze(-1) #(M, 1)
-            broadcast_b = self._addr.unsqueeze(0) #(1, N)
-            existence_bool = broadcast_a == broadcast_b  #(M, N)
+            broadcast_a: torch.Tensor = addr.unsqueeze(-1) #(M, 1)
+            broadcast_b: torch.Tensor = self._addr.unsqueeze(0) #(1, N)
+            existence_bool: torch.Tensor = (broadcast_a == broadcast_b)  #(M, N)
 
             released_addr = existence_bool.any(dim=0)
             retained_addr = torch.logical_not(released_addr)
@@ -455,33 +174,578 @@ class StorageModule(nn.Module):
             compression_col = col[retained_indices]
             compression_addr = self._addr[retained_indices]
 
-            self.commit(compression_row, compression_col, compression_addr)
+            self._commit(compression_row, compression_col, compression_addr)
 
+    ### Priority manager ###
+    @property
+    def priority(self) -> torch.Tensor:
+        """Return the priorities associated with the current addresses"""
+
+        _, _, _, status = self._transact(self.id,
+                                         get_addr=self._addr, get_priority=True)
+        _, priority, _, _ = status
+
+        return priority
+
+    @priority.setter
+    def priority(self, item: Union[float, torch.Tensor]):
+        """ Sets the priority. May be a float, or a 1d tensor"""
+
+        #Prep
+        assert isinstance(item, (float, torch.Tensor))
+        if isinstance(item, float):
+            item = torch.full([self._addr.shape[0]], item, dtype=torch.float16)
+        else:
+            item = item.type(torch.float16)
+
+        assert item.dim() == 1
+        assert item.shape[0] == self._addr.shape[0]
+
+        self._transact(self.id,
+                       set_addr = self._addr,
+                       set_priority = item)
+
+    ### Helper functions ###
+    def _mask2index(self, mask):
+        """ A small function """
+        assert torch.all(mask.sum(-1) == 1)
+        index = torch.arange(mask.shape[-1], dtype=torch.int64).view(-1, 1)
+        index = mask.matmul(index).squeeze()
+        return index
+
+    ### State modifiers
+    #
+    # These are the ONLY functions in the class which are allowed to
+    # set to anything persistant, whether it be in the backend or
+    # instance variables.
+
+    def _commit(self, row, col, addr):
+        """
+
+        Commits a particular row, col, addr sequence
+        to instance fields. This is the only function allowed
+        to change entries in the instance.
+
+        :param row: the row we are dealing with
+        :param col: the column entries
+        :param addr: the corrosponding addresses
+        """
+        #Build compression fixture, and perform sort.
+
+        sort_permutation = torch.arange(row.shape[0], device=self.device)
+        sort_permutation = torch_sparse.SparseStorage(row=row,
+                                                      col=col,
+                                                      value=sort_permutation).value()
+        final_row = row[sort_permutation]
+        final_col = col[sort_permutation]
+        final_addr = addr[sort_permutation]
+
+        _, _, _, status = self._transact(self.id,
+                                         get_addr=final_addr,
+                                         get_values=True)
+        final_value, _, _, _ = status
+
+        # Create the final storage, and store persistent quantities
+
+        self._storage = torch_sparse.SparseStorage(row=final_row,
+                                                   col=final_col,
+                                                   value=final_value,
+                                                   is_sorted=True)
+
+        self._rowptr = self._storage.rowptr()
+        self._col = self._storage.col()
+        self._addr = final_addr
+
+    def _transact(self,
+                 # Release transact quantities. These resolve first
+                 release_addr: Optional[torch.Tensor] = None,
+
+                 # Set transact quantities. These resove next
+
+                 set_addr: Optional[torch.Tensor] = None,
+                 set_values: Optional[torch.Tensor] = None,
+                 set_priority: Optional[torch.Tensor] = None,
+
+                 set_write_enabled: Optional[torch.Tensor] = None,
+                 set_free_enabled: Optional[torch.Tensor] = None,
+
+                 # New transact quantities. These resolve third
+
+                 new_values: Optional[torch.Tensor] = None,
+                 new_priority: Optional[torch.Tensor] = None,
+
+                 # Fetch transact quanties. these resolve last
+
+                 get_addr: Optional[torch.Tensor] = None,
+                 get_priority: Optional[bool] = False,
+                 get_values: Optional[bool] = False,
+                 ) -> Tuple[Union[None, Tuple[torch.Tensor, torch.Tensor]],
+                            Union[None, Tuple[torch.Tensor, torch.Tensor]],
+                            Union[None, Tuple[torch.Tensor, torch.Tensor]],
+                            Union[None, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]]:
+        """
+
+        The primary transaction manager for the instance. Connects between
+        the instance and the backend. Transactions are committed by the backend in
+        one go, and resolving in the following sequence:
+
+        1) Release
+        2) Set
+        3) New
+        4) Get
+
+        The transaction will return a sequence of status dictionaries properties
+        when relavent to allow interfacing with the transaction result.
+
+        This is the only method allowed to touch the backend. Generally,
+        the inputs to a particular segment should either be 1D tensors of
+        equal length and correct type, or None.
+
+        :param release_addr: Addresses to releas
+
+        :param set_addr: Addresses to set
+        :param set_values: The values to set
+        :param set_priority: The priority when releasing
+        :param set_write_enabled: Sets whether writing is allowed
+        :param set_free_enabled: Sets whether freeing is allowed.
+
+        :param new_values: Values to get addressses for
+        :param new_priority: Priorities for values
+
+        :param get_addr: addresses to get from.
+        :param get_priority: Whether to fetch priority or not.
+        :param get_values: Whether to fetch values or not.
+        :returns:
+            release_status: How the release attempt went.
+            set_status: How the set attempt went
+            new_status: How the new attempt went
+            get_status: The items which have been gotten
+        """
+
+        try:
+            status = self._backend.transact(self._id,
+
+                                            #Release
+                                            release_addr=release_addr,
+
+                                            #set params
+
+                                            set_addr = set_addr,
+                                            set_values = set_values,
+                                            set_priority = set_priority,
+                                            set_write_enabled = set_write_enabled,
+                                            set_free_enabled = set_free_enabled,
+
+                                            #new params
+
+                                            new_values = new_values,
+                                            new_priority = new_priority,
+
+                                            #get params
+
+                                            get_addr = get_addr,
+                                            get_values = get_values,
+                                            get_priority=get_priority,
+
+                                            )
+            return status
+        except Exception as err:
+            msg = "Error during transaction: %s" % err
+            raise RuntimeError(msg) from err
 
 
     ### Initialization ###
     def __init__(self,
                  backend,
-                 device = None,
+                 device: torch.device = None,
+                 default_priority: float = 1.0,
                  ):
+        """
+
+        The initialization for the storage module. This must
+        specify the backend, and may optionally specify the device
+        and default priority.
+
+        :param backend: A SparseParamServer
+        :param device: The device to build myself on
+        :param default_priority: The priority modifier. This influences whether or
+            not a particular value is likely to be purged when memory needs to be
+            freed.
+
+            Higher numbers means more important and less likely to be purged.
+        """
         # Start torch
 
         super().__init__()
 
-        #Store persistent placeholders.
 
-        rowptr = torch.empty([0], dtype=torch.int64, device=device)
-        col = torch.empty([0], dtype=torch.int64, device=device)
-        addr = torch.empty([0], dtype=torch.int64, device=device)
 
-        self.register_buffer('_rowptr', rowptr)
-        self.register_buffer('_col', col)
-        self.register_buffer('_addr', addr)
+        # Store persistent placeholders.
+        self._rowptr = torch.empty([0], dtype=torch.int64, device=device)
+        self._col = torch.empty([0], dtype=torch.int64, device=device)
+        self._addr = torch.empty([0], dtype=torch.int64, device=device)
+        self._id = torch.Tensor(hash(uuid.uuid1()))
 
-        #Register and store backend
-        self.backend = backend
-        self.backend.register(self)
+        self.register_buffer('_rowptr', self._rowptr)
+        self.register_buffer('_col', self._col)
+        self.register_buffer('_addr', self._addr)
+        self.register_buffer('_id', self._id)
 
+        #store backend and default priority
+        self._backend = backend
+        self.default = default_priority
+
+
+class ParamServer(nn.Module):
+    """
+
+
+
+    The base class for the involved parameter server.
+
+    This class is responsible for declaring a parameter space
+    which can be served from, and handling transact queries
+    from any attached StorageModules. It performs parameter
+    authentication, as well as get, set, release, and new handling.
+
+    Importantly, all subclasses of this must implement transact. Also,
+    of note, violating permission rules does NOT throw an error. Instead,
+    the server determined how to handle the situation, and only returns addresses
+    to the items which did successfully persist or execute. Access rule violation
+    however, does throw an error.
+
+
+    """
+    ### Helper functions ###
+    def _mask2index(self, mask):
+        """ A small function """
+        assert torch.all(mask.sum(-1) == 1)
+        index = torch.arange(mask.shape[-1], dtype=torch.int64).view(-1, 1)
+        index = mask.matmul(index).squeeze()
+        return index
+
+    ### Memory information properties ###
+    @property
+    def total(self):
+        """ The total amount of memory"""
+        return self._active.shape[0]
+    @property
+    def free(self):
+        """ The amount of free memory"""
+        return self.total - self._active.sum()
+    @property
+    def used(self):
+        """ The amount of used memory"""
+        return self._active.sum()
+
+    ### Basic query subactions ###
+    def release(self, id: torch.Tensor,
+                release_addr: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+
+        Releases addresses, if this is permitted. ID and
+        release_addr must be provided. Returned is a
+        tuple, indicating first any addresses that were
+        not released, and second which indexes of the incoming
+        release tensor were not successfully freed.
+
+
+        :param id: The id the query came from
+        :param release_addr: The addresses to release. 1D float64 tensor
+        :returns:
+            remaining_addresses,
+            remaining_indexmask
+        """
+
+        #Validation
+        assert torch.is_tensor(id)
+        assert id.dim() == 0
+        assert id.dtype == torch.int32
+
+        assert torch.is_tensor(release_addr)
+        assert release_addr.dim() == 1
+        assert release_addr.dtype == torch.int64
+
+        assert (release_addr >= 0).all()
+        assert (release_addr < self.total)
+
+        if (self._ids[release_addr] != id).any():
+            raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
+
+
+        #Freeing. Figure out what indices can be freed, then set those as
+        #freed and reset all flags. For the ones that cannot be freed,
+        #figure out what the addresses were and return them, plus the
+        #indexmask
+
+        can_release = self._free_enabled[release_addr]
+        cannot_release = torch.logical_not(can_release)
+
+        to_release = release_addr.masked_select(can_release)
+        not_released = release_addr.masked_select(cannot_release)
+
+        self._active[to_release] = False
+        self._write_enabled[to_release] = False
+        self._ids[to_release] = -1
+
+        return not_released, self._mask2index(not_released)
+
+
+
+
+
+
+        pass
+    def set(self, id: torch.Tensor,
+            set_addr: torch.Tensor,
+            set_values: Union[torch.Tensor, None],
+            set_priority: Union[torch.Tensor, None],
+            set_write_enabled: Union[torch.Tensor, None],
+            set_free_enabled: Union[torch.Tensor, None])\
+                                                ->  Tuple[torch.Tensor, torch.Tensor]:
+        """
+
+        The set action of the backend. set_addr is required, and must be an int64
+        tensor of addresses. Set value, set_priority, set_write_enabled, and
+        set_read_enabled are all optional, and must be tensors of the same
+        length as set_addr.
+
+        Note that when set_write_enabled is not None, it is assumed to be the
+        case that we wish to write the current entries, THEN set the access permissions.
+
+        :param id: The id of the query caller
+        :param set_addr: A 1D int64 tensor. The addresses to modify
+        :param set_values: A 1D tensor, or None. The values to set
+        :param set_priority: A 1D float32 tensor, or None. The associated priority
+        :param set_write_enabled: A 1D bool tensor, or None. Whether value is write enabled
+        :param set_free_enabled: A 1D bool tensor, or None. Whether a value is free enabled
+        :return:
+        """
+
+        #Validation
+        assert torch.is_tensor(id)
+        assert id.dim() == 0
+        assert id.dtype == torch.int32
+
+        assert torch.is_tensor(set_addr)
+        assert set_addr.dim() == 1
+        assert set_addr.dtype == torch.int64
+        assert (set_addr >= 0).all()
+        assert (set_addr < self.total).all()
+
+        if (self._ids[set_addr] != id).any():
+            raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
+
+
+
+
+        #Transaction construction and verification.
+
+        #We validate items as we go along, and construct a
+        #list called transaction containing functions which need to be
+        #called to perform the transaction.
+
+        #Once all items check out, a loop applies them all.
+
+        transaction = []
+
+        if self._write_enabled is not None:
+            assert torch.is_tensor(set_write_enabled)
+            assert set_write_enabled.dim() == 1
+            assert set_write_enabled.shape[0] == set_addr.shape[0]
+            assert set_write_enabled.dtype == torch.bool
+
+            def set():
+                self._write_enabled[set_addr] = set_write_enabled
+            transaction.append(set)
+
+            #Overwrite enabled
+            can_write_mask = torch.full([set_addr.shape[0]], True)
+            can_write_addr = set_addr.masked_select(can_write_mask)
+        else:
+            #No overwrite. Obey access control.
+            can_write_mask = self._write_enabled[set_addr]
+            can_write_addr = set_addr.masked_select(can_write_mask)
+
+        if set_values is not None:
+            assert torch.is_tensor(set_values)
+            assert set_values.dim() == 1
+            assert set_values.shape[0] == set_addr.shape[0]
+            assert set_values.dtype == self._memory.dtype
+
+            #Reduce to the items which we can write to
+            set_values = set_values.masked_select(can_write_mask)
+            def set():
+                self._memory[can_write_addr] = set_values
+            transaction.append(set)
+        if set_priority is not None:
+            assert torch.is_tensor(set_priority)
+            assert set_priority.dim() == 1
+            assert set_priority.shape[0] == set_addr.shape[0]
+            assert set_priority.dtype == torch.float32
+
+            set_priority = set_priority.masked_select(can_write_mask)
+            def set():
+                self._priority[can_write_addr] = set_priority
+            transaction.append(set)
+        if set_free_enabled is not None:
+            assert torch.is_tensor(set_free_enabled)
+            assert set_free_enabled.dim() == 1
+            assert set_free_enabled.shape[0] == set_addr.shape[0]
+            assert set_free_enabled.dtype == torch.bool
+
+            set_free_enabled = set_free_enabled.masked_select(can_write_mask)
+            def set():
+                self._free_enabled[can_write_addr] = set_free_enabled
+            transaction.append(set)
+
+        #All verification completed successfully. Commit the transaction, and
+        #return the status.
+        for item in transaction:
+            item()
+        return set_addr, torch.arange(set_addr.shape[0])
+
+
+
+
+
+        pass
+    def new(self, id, new_values, new_priority) -> Tuple[torch.Tensor, torch.Tensor]:
+        pass
+
+    def get(self, id, get_addr, get_values, get_priority)-> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        pass
+
+    def transact(self,
+                  id: torch.Tensor,
+
+                  #Release transact quantities. These resolve first
+                  release_addr: Optional[torch.Tensor] = None,
+
+                  #Set transact quantities. These resove next
+
+                  set_addr: Optional[torch.Tensor] = None,
+                  set_values: Optional[torch.Tensor] = None,
+                  set_priority: Optional[torch.Tensor] = None,
+
+                  set_write_enabled: Optional[torch.Tensor] = None,
+                  set_free_enabled: Optional[torch.Tensor] = None,
+
+
+                  #New transact quantities. These resolve third
+
+                  new_values: Optional[torch.Tensor] = None,
+                  new_priority: Optional[torch.Tensor] = None,
+
+                  #Fetch transact quanties. these resolve last
+
+                  get_addr: Optional[torch.Tensor] = None,
+                  get_priority: Optional[bool] = False,
+                  get_values: Optional[bool] = False,
+                 ) -> Tuple[Union[None, Tuple[torch.Tensor, torch.Tensor]],
+                            Union[None, Tuple[torch.Tensor, torch.Tensor]],
+                            Union[None, Tuple[torch.Tensor, torch.Tensor]],
+                            Union[None, Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]]:
+        """
+
+        The primary transaction manager for the instance. Connects between
+        the instance and the backend. Transactions are committed by the backend in
+        one go, and resolving in the following sequence:
+
+        1) Release
+        2) Set
+        3) New
+        4) Get
+
+        The transaction will return a sequence of status dictionaries properties
+        when relavent to allow interfacing with the transaction result.
+
+        This is the only method allowed to touch the backend. Generally,
+        the inputs to a particular segment should either be 1D tensors of
+        equal length and correct type, or None.
+
+        :param release_addr: Addresses to releas
+
+        :param set_addr: Addresses to set
+        :param set_values: The values to set
+        :param set_priority: The priority when releasing
+        :param set_write_enabled: Sets whether writing is allowed
+        :param set_free_enabled: Sets whether freeing is allowed.
+
+        :param new_values: Values to get addressses for
+        :param new_priority: Priorities for values
+        :param get_addr: addresses to get from.
+        :param get_priority: Whether to fetch priority or not.
+        :param get_values: Whether to fetch values or not.
+        :returns:
+            release_status: How the release attempt went.
+            set_status: How the set attempt went
+            new_status: How the new attempt went
+            get_status: The items which have been gotten
+        """
+
+        release_status = None
+        set_status = None
+        new_status = None
+        get_status = None
+
+        if release_addr is not None:
+            release_status = self.release(id, release_addr)
+        if set_addr is not None:
+            set_status = self.set(id, set_addr, set_values, set_priority, set_write_enabled, set_free_enabled)
+        if new_values is not None:
+            new_status = self.new(id, new_values, new_priority)
+        if get_status is not None:
+            get_status = self.get(id, get_addr, get_values, get_priority)
+
+        return release_status, set_status, new_status, get_status
+    def __init__(self,
+                 quantity: int,
+                 device: torch.device,
+                 dtype: torch.dtype,
+                 requires_grad: bool = True,
+
+                 reclamation_activation: Optional[Callable] = None
+
+                 ):
+        super().__init__()
+
+        if reclamation_activation is None:
+            reclamation_activation = torch.abs
+        else:
+            # todo: Figure out how to save a function. As it stands, will not save when not none
+            raise NotImplementedError("This features is not yet available")
+
+        #Create permission and activity trackers. Follow these
+        #up with memory change flags. Then register these as buffers
+
+        self._active = torch.full([quantity], False, device=device)
+        self._ids = -torch.ones([quantity], dtype=torch.int32)
+
+        self._free_enabled = torch.full([quantity], True, device=device)
+        self._write_enabled = torch.full([quantity], True, device=device)
+
+        self.register_buffer('_active', self._active)
+        self.register_buffer('_ids', self._ids)
+        self.register_buffer('_free_enabled', self._free_enabled)
+        self.register_buffer('_write_enabled', self._write_enabled)
+
+
+        #Create parameters memory, priority
+        self._memory = torch.empty([quantity],
+                                   dtype=dtype,
+                                   device=device,
+                                   requires_grad=requires_grad)
+        self._priority = torch.empty([quantity],
+                                     dtype=torch.float16,
+                                     device=device,
+                                     requires_grad=False)
+
+        self._memory = nn.Parameter(self._memory, requires_grad=requires_grad)
+        self._priority = nn.Parameter(self._priority, requires_grad=False)
+
+        #Store persistant
+        self._dtype = dtype
 
 
 
