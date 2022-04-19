@@ -137,18 +137,13 @@ class StorageModule(nn.Module):
             self._commit(final_index[:, 0], final_index[:, 1], final_addr)
 
     def release(self,
-                addr: torch.Tensor):
+                addr: torch.Tensor) -> Callable:
         """
 
-        Rebuilds storage with the given addresses released.
+       Returns a promise to rebuild the storage with any
+       given addresses eliminated once the return is called.
 
-        Utilized primarily by the memory management backend
-        when it needs to reclaim memory from somewhere.
-
-        A call to this is a declaration:
-        "Hey, you are not responsible for these addresses anymore"
-
-        :param addr: A tensor, consisting of the addresses to release
+       :param addr: A tensor, consisting of the addresses to release
         """
         with torch.no_grad():
             #Develop the current index
@@ -174,7 +169,11 @@ class StorageModule(nn.Module):
             compression_col = col[retained_indices]
             compression_addr = self._addr[retained_indices]
 
-            self._commit(compression_row, compression_col, compression_addr)
+            #Return the promise
+
+            def promise():
+                self._commit(compression_row, compression_col, compression_addr)
+            return promise
 
     ### Priority manager ###
     @property
@@ -459,7 +458,8 @@ class ParamServer(nn.Module):
     def _release(self,
                  environment: Dict,
                  id: torch.Tensor,
-                release_addr: torch.Tensor) -> \
+                release_addr: torch.Tensor,
+                 force_release = False) -> \
             Tuple[Dict, Tuple[torch.Tensor, torch.Tensor]]:
         """
 
@@ -492,7 +492,7 @@ class ParamServer(nn.Module):
         assert (release_addr >= 0).all()
         assert (release_addr < self.total)
 
-        if (environment['id']  != id).any():
+        if (environment['id']  != id).any() and force_release is False:
             raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
 
 
@@ -627,7 +627,8 @@ class ParamServer(nn.Module):
              environment: Dict,
              id: torch.Tensor,
              new_values: torch.Tensor,
-             new_priority: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+             new_priority: torch.Tensor) ->\
+            Tuple[Dict, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Create new values, if possible. It may end up being the case that
         insufficient memory remains in order to do this. If this is the case,
@@ -658,22 +659,99 @@ class ParamServer(nn.Module):
         assert new_values.shape[0] == new_priority.shape[0]
 
         # Transaction generation.
-        if torch.logical_not(environment['active']).sum() >= new_values.shape[0]:
-            #Sufficient memory exists for a straightforward activation
-            pass
+        selection_index = torch.arange(new_values.shape[0], device=self.device) #By default, all.
+        if torch.logical_not(environment['active']).sum() < new_values.shape[0]:
+            #Insufficient memory exists for a direct application. Instead,
+            #we go ahead and see if we can shuffle it in to free some. Do this
+            #by concatenating together a mock global environment, sorting it to
+            #see what values were lowest, then securing promises to release
+            #these.
 
-        elif torch.logical_not(environment['active']).sum() + environment['free_enabled'].sum() >= new_values.shape[0]:
-            #Insufficient memory exists. But I can free enough. Do so.
-            pass
+            addr = self._mask2index(environment['active'])
+            addr = addr.masked_select(environment['free_enabled'][addr])
+            values = environment['memory'][addr]
+            priority = environment['priority'][addr]
 
-        else:
-            raise MemoryError("Insufficient freeable memory remains")
+            ##This bears a little explanation. We embed the new_values index into the
+            #address stream, so we can retrieve the passing ones after the sort. They
+            #live in the negative address region, which is unused.
+            mock = -torch.arange(new_values.shape[0])-1
+
+            addr = torch.concat([addr, mock])
+            values = torch.concat([values, new_values])
+            priority = torch.concat([priority, new_priority])
+
+            #Perform sort. Extract needed indices, and generate release instructions.
+
+            sort_item = values*priority.type(values.dtype)
+            sort_item = self._reclamation_activation(sort_item)
+            sort_index = torch.argsort(sort_item, descending=True)
+
+            sorted_addr = addr[sort_index]
+
+            keep = sorted_addr[:self.total]
+            discard = sorted_addr[self.total:]
+
+            ## Recovers new items from sort. We find, in the keep pile, anything
+            ##that was negative. This was a new_value index reference. Extract these,
+            ##restore them to normal format, and we know what piece of the input to keep
+            new_mask = keep < 0
+            selected_index = keep.masked_select(new_mask)
+            selected_index = -(selected_index+1)
+
+            #Figure out what items will need to be turned off now. Go through the
+            #discard pile, looking at the positive entries - the ones that are not new
+            #Each of these will need to be discarded.
+
+            discard_mask = discard >= 0
+            discard = discard.masked_select(discard_mask)
+
+            #Go discard the indicated indices, getting the needed promises for later. Then
+            #set these items to be discarded. Follow this up by revising the selected value
+            #quantities to be pruned down to the kept items. After this, a normal save process
+            #will work, as enough memory now exists.
+
+            for item in self._module_storage:
+                environment['transaction'].append(item.release(discard))
+            environment, _ = self._release(environment, id, discard, False)
+
+            new_values = new_values[selected_index]
+            new_priority = new_priority[selected_index]
+
+        #Perform normal save
+        inactive_mask = torch.logical_not(environment['active'])
+        free_indices = self._mask2index(inactive_mask)
+        free_indices = free_indices[:new_values.shape[0]]
+
+        environment['active'][free_indices] = True
+        environment['id'][free_indices] = id
+        environment['memory'][free_indices] = new_values
+        environment['priority'][free_indices] = new_priority
+        environment['free_enabled'][free_indices] = True
+        environment['write_enabled'][free_indices] = True
+
+        return environment, (free_indices, torch.arange(new_values.shape[0]))
+
+    def _get(self, environment: Dict,
+            id: torch.Tensor,
+            get_addr: torch.Tensor,
+            get_values: bool,
+            get_priority: bool)-> Tuple[Dict,
+                                        Tuple[Union[None, torch.Tensor],
+                                              Union[None, torch.Tensor]]
+                                        ]:
+        """
+
+        The get action
 
 
-
-
-    def get(self,  id, get_addr, get_values, get_priority)-> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        pass
+        :param environment:
+        :param id:
+        :param get_addr:
+        :param get_values:
+        :param get_priority:
+        :return:
+        """
 
     def transact(self,
                   id: torch.Tensor,
@@ -793,7 +871,7 @@ class ParamServer(nn.Module):
         if reclamation_activation is None:
             reclamation_activation = torch.abs
         else:
-            # todo: Figure out how to save a function. As it stands, will not save when not none
+            # TODO: Figure out how to save a function. As it stands, will not save when not none
             raise NotImplementedError("This features is not yet available")
 
         #Create permission and activity trackers. Follow these
@@ -827,6 +905,9 @@ class ParamServer(nn.Module):
 
         #Store persistant
         self._dtype = dtype
+
+        # TODO: This will not stay around in a saveload cycle. Fix
+        self._reclamation_activation = reclamation_activation
 
 
 
