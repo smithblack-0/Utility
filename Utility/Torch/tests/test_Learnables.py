@@ -77,7 +77,7 @@ class testLinear(unittest.TestCase):
         test_tensor = torch.randn([20, 10])
         
         #Develop test layer
-        test_grad = Learnables.Linear((20, 10), 1)
+        test_grad = Learnables.Linear((20, 10), 1)t
         
         #Develop optim
         test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)

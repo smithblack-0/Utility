@@ -6,9 +6,21 @@ import numpy as np
 import torch_sparse
 from torch import nn
 
+class TriggerModule(nn.Module):
+    """
+
+    A module capable of telling when
+    a particular item has been changed
+    by a distributed broadcast, syncronous
+    or not.
+
+    When a hook is registered, it watches
+    to see if the
+    """
 
 
-class StorageModule(nn.Module):
+
+class ArchStorageModule(nn.Module):
     """
     A module capable of storing and managing
     access to a SparseStorage backend from
@@ -412,326 +424,193 @@ class StorageModule(nn.Module):
         self.default = default_priority
 
 
-class ParamServer(nn.Module):
-    """
+class Storage(nn.Module):
+    ### properties ###
+    @property
+    def addresses(self):
+        return self._addresses
+    @property
+    def updates(self):
+        return self._updates
+    @property
+    def owner(self):
+        return self._owner
+    @property
+    def index(self):
+        return self._index
+    @property
+    def priority(self):
+        return self._priority
+    @property
+    def value(self):
+        return self._value
+    @property
+    def transfer(self):
+        return self._transfer
+    @property
+    def length(self):
+        return self._owner.shape[-1]
 
+    @owner.setter
+    def owner(self, value):
+        """ Changing owners logic"""
 
+        assert torch.is_tensor(value)
+        assert value.shape == self._owner.shape
+        assert value.dtype == torch.bool
+        with torch.no_grad():
+            self._owner.copy_(value)
+    @index.setter
+    def index(self, index):
+        """ Changing index logic"""
+        assert torch.is_tensor(index)
+        assert self._index.shape == index.shape
+        assert self._index.dtype == index.dtype
+        with torch.no_grad():
+            self._index.copy_(index)
+    @priority.setter
+    def priority(self, priority):
+        assert torch.is_tensor(priority)
+        assert self._priority.shape == priority.shape
+        assert self._priority.dtype == priority.dtype
+        with torch.no_grad():
+            self._priority.copy_(priority)
+    @value.setter
+    def value(self, value):
+        assert torch.is_tensor(value)
+        assert self._value.shape == value.shape
+        assert self._value.dtype == value.dtype
+        with torch.no_grad():
+            self._value.copy_(value)
+    @transfer.setter
+    def transfer(self, transfer):
+        assert torch.is_tensor(transfer)
+        assert self._transfer.shape == transfer.shape
+        assert self._transfer.dtype == transfer.dtype
+        with torch.no_grad():
+            self._transfer.copy_(transfer)
+    @updates.setter
+    def updates(self, value):
+        self._updates = value
+    ### Inferred ###
 
-    The base class for the involved parameter server.
-
-    This class is responsible for declaring a parameter space
-    which can be served from, and handling transact queries
-    from any attached StorageModules. It performs parameter
-    authentication, as well as get, set, release, and new handling.
-
-    Importantly, all subclasses of this must implement transact. Also,
-    of note, violating permission rules does NOT throw an error. Instead,
-    the server determined how to handle the situation, and only returns addresses
-    to the items which did successfully persist or execute. Access rule violation
-    however, does throw an error.
-
-
-    """
-    ### Helper functions ###
-    def _mask2index(self, mask):
-        """ A small function """
-        assert torch.all(mask.sum(-1) == 1)
-        index = torch.arange(mask.shape[-1], dtype=torch.int64).view(-1, 1)
-        index = mask.matmul(index).squeeze()
-        return index
-
-    ### Memory information properties ###
     @property
     def total(self):
-        """ The total amount of memory"""
-        return self._active.shape[0]
-    @property
-    def free(self):
-        """ The amount of free memory"""
-        return self.total - self._active.sum()
+        return self._owner.shape[0]
     @property
     def used(self):
-        """ The amount of used memory"""
-        return self._active.sum()
+        return self.owner.any(dim=-1).sum()
+    @property
+    def free(self):
+        return self.total - self.used
 
+
+    ### Helper ###
+    def _mask2index(self, mask):
+        index = torch.arange(mask.shape[-1], device=mask.device, dtype=torch.int64)
+        index = index.masked_select(mask)
+        return index
+
+    #Functions
+    def copy(self):
+        """ Creates a copy of my storage """
+        item = Storage(self.owner,
+                       self.index,
+                       self.priority,
+                       self.value,
+                       self.transfer)
+        item.updates = self.updates
+        return item
+    def from_copy(self, copy):
+        """ Updates my storage from a copy"""
+        self.updates = copy.updates
+        self.owner.copy_(copy.owner)
+        self.index.copy_(copy.index)
+        self.priority.copy_(copy.priority)
+        self.value.copy_(copy.value)
+        self.transfer.copy_(copy.transfer)
+        return self
+
+    def expand(self,
+               amount: int):
+        new_owner = torch.full([self.length, amount], False)
+        new_owner = torch.concat([self.owner, new_owner], dim=-1)
+        self._owner = new_owner
+
+    def __init__(self,
+                 owner: torch.Tensor,
+                 index: torch.Tensor,
+                 priority: torch.Tensor,
+                 value: torch.nn.Parameter,
+                 transfer: torch.Tensor,
+                 ):
+        super().__init__()
+
+        #Run validation
+        assert torch.is_tensor(owner)
+        assert torch.is_tensor(index)
+        assert torch.is_tensor(priority)
+        assert torch.is_tensor(value)
+        assert torch.is_tensor(transfer)
+
+        assert owner.dim() == 2
+        assert index.dim() == 2
+        assert priority.dim() == 1
+        assert value.dim() == 1
+        assert transfer.dim == 1
+
+        length = owner.shape[0]
+        assert index.shape[0] == length
+        assert priority.shape[0] == length
+        assert value.shape[0] == length
+        assert transfer.shape[0] == length
+
+        assert owner.dtype == torch.bool
+        assert index.dtype == torch.int64
+        assert value.dtype == priority.dtype
+        assert value.dtype == transfer.dtype
+
+        device =  owner.device
+        assert device == index.device
+        assert device == value.device
+        assert device == priority.device
+        assert device == transfer.device
+
+        assert isinstance(value, nn.Parameter)
+
+        #Store items
+
+        self._updates = torch.empty([0], dtype=torch.int64, device=device)
+        self._addresses = torch.arange(length, device =device, dtype=torch.int64)
+        self._owner = owner
+        self._index = index
+        self._priority = priority
+        self._transfer = transfer
+        self._value = value
+
+        self.register_buffer('_addresses', self._addresses)
+        self.register_buffer('_owner', self._owner)
+        self.register_buffer('_index', self._index)
+        self.register_buffer('_priority', self._priority)
+        self.register_buffer('_transfer', self._transfer)
+        self.register_parameter('_value', self._value)
+
+
+
+class ParamMan(nn.Module):
+    """
+    The storage location for parameters.
+    The interface through which such things can be modified.
+
+    """
+
+
+
+    class idStorage(nn.Module):
+        """ A microclass for holding ids"""
+        def __init__(self):
+            super().__init__()
     ### Basic query subactions ###
-    def _release(self,
-                 environment: Dict,
-                 id: torch.Tensor,
-                release_addr: torch.Tensor,
-                 force_release = False) -> \
-            Tuple[Dict, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-
-        Releases addresses, if this is permitted. ID and
-        release_addr must be provided. Returned is a
-        tuple, indicating first any addresses that were
-        not released, and second which indexes of the incoming
-        release tensor were not successfully freed.
-
-
-        :param id: The id the query came from
-        :param release_addr: The addresses to release. 1D float64 tensor
-        :returns:
-            transaction,
-            released_addresses,
-            (remaining_addresses,
-            remaining_indexmask)
-
-        """
-
-        #Validation
-        assert torch.is_tensor(id)
-        assert id.dim() == 0
-        assert id.dtype == torch.int32
-
-        assert torch.is_tensor(release_addr)
-        assert release_addr.dim() == 1
-        assert release_addr.dtype == torch.int64
-
-        assert (release_addr >= 0).all()
-        assert (release_addr < self.total)
-
-        if (environment['id']  != id).any() and force_release is False:
-            raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
-
-
-        #Freeing. Figure out what indices can be freed, then set those as
-        #freed and reset all flags. For the ones that cannot be freed,
-        #figure out what the addresses were and return them, plus the
-        #indexmask. Create the transaction, and return it with the status
-
-        can_release = environment['free_enabled'][release_addr]
-        cannot_release = torch.logical_not(can_release)
-
-        to_release = release_addr.masked_select(can_release)
-        not_released = release_addr.masked_select(cannot_release)
-
-        environment['active'][to_release] = False
-        environment['write_enabled'][to_release] = False
-        environment['id'][to_release] = -1
-
-        return environment, (not_released, self._mask2index(not_released))
-
-
-
-
-
-
-        pass
-    def _set(self,
-            environment: Dict,
-            id: torch.Tensor,
-            set_addr: torch.Tensor,
-            set_values: Union[torch.Tensor, None],
-            set_priority: Union[torch.Tensor, None],
-            set_write_enabled: Union[torch.Tensor, None],
-            set_free_enabled: Union[torch.Tensor, None])\
-                                                ->  Tuple[Dict,
-                                                    Tuple[torch.Tensor, torch.Tensor]]:
-        """
-
-        The set action of the backend. set_addr is required, and must be an int64
-        tensor of addresses. Set value, set_priority, set_write_enabled, and
-        set_read_enabled are all optional, and must be tensors of the same
-        length as set_addr.
-
-        Note that when set_write_enabled is not None, it is assumed to be the
-        case that we wish to write the current entries, THEN set the access permissions.
-
-        :param id: The id of the query caller
-        :param set_addr: A 1D int64 tensor. The addresses to modify
-        :param set_values: A 1D tensor, or None. The values to set
-        :param set_priority: A 1D float32 tensor, or None. The associated priority
-        :param set_write_enabled: A 1D bool tensor, or None. Whether value is write enabled
-        :param set_free_enabled: A 1D bool tensor, or None. Whether a value is free enabled
-        :return:
-        """
-
-        #Validation
-        assert torch.is_tensor(id)
-        assert id.dim() == 0
-        assert id.dtype == torch.int32
-
-        assert torch.is_tensor(set_addr)
-        assert set_addr.dim() == 1
-        assert set_addr.dtype == torch.int64
-        assert (set_addr >= 0).all()
-        assert (set_addr < self.total).all()
-
-
-        if (environment['id'] != id).any():
-            raise MemoryError("Attempt by %s to access memory it does not own" % id.item())
-
-
-
-
-        #Transaction construction and verification.
-
-        #We validate items as we go along, and construct a
-        #list called transaction containing functions which need to be
-        #called to perform the transaction.
-
-        #Once all items check out, a loop applies them all.
-
-
-        if set_write_enabled is not None:
-            assert torch.is_tensor(set_write_enabled)
-            assert set_write_enabled.dim() == 1
-            assert set_write_enabled.shape[0] == set_addr.shape[0]
-            assert set_write_enabled.dtype == torch.bool
-
-            environment['write_enabled'][set_addr] = set_write_enabled
-
-            #Overwrite enabled
-            can_write_mask = torch.full([set_addr.shape[0]], True)
-            can_write_addr = set_addr.masked_select(can_write_mask)
-        else:
-            #No overwrite. Obey access control.
-            can_write_mask = environment['write_enabled']
-            can_write_addr = set_addr.masked_select(can_write_mask)
-
-        if set_values is not None:
-            assert torch.is_tensor(set_values)
-            assert set_values.dim() == 1
-            assert set_values.shape[0] == set_addr.shape[0]
-            assert set_values.dtype == self._memory.dtype
-
-            #Reduce to the items which we can write to
-            set_values = set_values.masked_select(can_write_mask)
-            environment['memory'][can_write_addr] = set_values
-
-        if set_priority is not None:
-            assert torch.is_tensor(set_priority)
-            assert set_priority.dim() == 1
-            assert set_priority.shape[0] == set_addr.shape[0]
-            assert set_priority.dtype == torch.float32
-
-            set_priority = set_priority.masked_select(can_write_mask)
-            environment['priority'][can_write_addr] = set_priority
-
-        if set_free_enabled is not None:
-            assert torch.is_tensor(set_free_enabled)
-            assert set_free_enabled.dim() == 1
-            assert set_free_enabled.shape[0] == set_addr.shape[0]
-            assert set_free_enabled.dtype == torch.bool
-
-            set_free_enabled = set_free_enabled.masked_select(can_write_mask)
-            environment['free_enabled'][can_write_addr] = set_free_enabled
-
-        #All verification and construction complete. Return the pending
-        #transaction, and the status
-        return environment, (set_addr, torch.arange(set_addr.shape[0]))
-
-    def _new(self,
-             environment: Dict,
-             id: torch.Tensor,
-             new_values: torch.Tensor,
-             new_priority: torch.Tensor) ->\
-            Tuple[Dict, Tuple[torch.Tensor, torch.Tensor]]:
-        """
-        Create new values, if possible. It may end up being the case that
-        insufficient memory remains in order to do this. If this is the case,
-        we take the proposed new values with their priority, sort the values
-        and addresses by how large they tend to be, release enough small addresses
-        to hold the new values, and return the resulting transaction.
-
-        :param environment: The current environment.
-        :param id: The id this is coming from
-        :param new_values: What new values to set
-        :param new_priority: The priorities to go with the values.
-        :return:
-        """
-
-        #Validation
-        assert torch.is_tensor(id)
-        assert id.dtype == torch.int32
-        assert id.dim() == 0
-
-        assert torch.is_tensor(new_values)
-        assert new_values.dim() == 1
-        assert new_values.dtype == environment['memory'].dtype
-
-        assert torch.is_tensor(new_priority)
-        assert new_priority.dim() == 1
-        assert new_priority.dtype == environment['priority'].dtype
-
-        assert new_values.shape[0] == new_priority.shape[0]
-
-        # Transaction generation.
-        selection_index = torch.arange(new_values.shape[0], device=self.device) #By default, all.
-        if torch.logical_not(environment['active']).sum() < new_values.shape[0]:
-            #Insufficient memory exists for a direct application. Instead,
-            #we go ahead and see if we can shuffle it in to free some. Do this
-            #by concatenating together a mock global environment, sorting it to
-            #see what values were lowest, then securing promises to release
-            #these.
-
-            addr = self._mask2index(environment['active'])
-            addr = addr.masked_select(environment['free_enabled'][addr])
-            values = environment['memory'][addr]
-            priority = environment['priority'][addr]
-
-            ##This bears a little explanation. We embed the new_values index into the
-            #address stream, so we can retrieve the passing ones after the sort. They
-            #live in the negative address region, which is unused.
-            mock = -torch.arange(new_values.shape[0])-1
-
-            addr = torch.concat([addr, mock])
-            values = torch.concat([values, new_values])
-            priority = torch.concat([priority, new_priority])
-
-            #Perform sort. Extract needed indices, and generate release instructions.
-
-            sort_item = values*priority.type(values.dtype)
-            sort_item = self._reclamation_activation(sort_item)
-            sort_index = torch.argsort(sort_item, descending=True)
-
-            sorted_addr = addr[sort_index]
-
-            keep = sorted_addr[:self.total]
-            discard = sorted_addr[self.total:]
-
-            ## Recovers new items from sort. We find, in the keep pile, anything
-            ##that was negative. This was a new_value index reference. Extract these,
-            ##restore them to normal format, and we know what piece of the input to keep
-            new_mask = keep < 0
-            selected_index = keep.masked_select(new_mask)
-            selected_index = -(selected_index+1)
-
-            #Figure out what items will need to be turned off now. Go through the
-            #discard pile, looking at the positive entries - the ones that are not new
-            #Each of these will need to be discarded.
-
-            discard_mask = discard >= 0
-            discard = discard.masked_select(discard_mask)
-
-            #Go discard the indicated indices, getting the needed promises for later. Then
-            #set these items to be discarded. Follow this up by revising the selected value
-            #quantities to be pruned down to the kept items. After this, a normal save process
-            #will work, as enough memory now exists.
-
-            for item in self._module_storage:
-                environment['transaction'].append(item.release(discard))
-            environment, _ = self._release(environment, id, discard, False)
-
-            new_values = new_values[selected_index]
-            new_priority = new_priority[selected_index]
-
-        #Perform normal save
-        inactive_mask = torch.logical_not(environment['active'])
-        free_indices = self._mask2index(inactive_mask)
-        free_indices = free_indices[:new_values.shape[0]]
-
-        environment['active'][free_indices] = True
-        environment['id'][free_indices] = id
-        environment['memory'][free_indices] = new_values
-        environment['priority'][free_indices] = new_priority
-        environment['free_enabled'][free_indices] = True
-        environment['write_enabled'][free_indices] = True
-
-        return environment, (free_indices, torch.arange(new_values.shape[0]))
-
     def _get(self, environment: Dict,
             id: torch.Tensor,
             get_addr: torch.Tensor,
@@ -752,7 +631,8 @@ class ParamServer(nn.Module):
         :param get_priority:
         :return:
         """
-
+        #TODO: Impliment
+        pass
     def transact(self,
                   id: torch.Tensor,
 
@@ -827,36 +707,245 @@ class ParamServer(nn.Module):
         #runtime environment and edit that. Once we are sure that
         #we have not made any mistakes, we go ahead and copy the results
         #into our actual backend.
-        with torch.no_grad():
-            simulated_environment = {
-                'transaction' : [],
+        environment = self._storage.copy()
 
-                'active' : self._active.clone(),
-                'id' : self._ids.clone(),
-
-                'free_enabled' : self._free_enabled,
-                'write_enabled' : self._write_enabled,
-
-                'memory' : self._memory,
-                'priority' : self._priority
-            }
-
-
-            release_status = None
-            set_status = None
-            new_status = None
-            get_status = None
+        release_status = None
+        set_status = None
+        new_status = None
+        get_status = None
 
         if release_addr is not None:
-            simulated_environment, release_status = self._release(simulated_environment, id, release_addr)
+            environment = self._release(environment, id, release_addr)
         if new_values is not None:
-            simulated_environment, new_status = self._new(simulated_environment, id, new_values, new_priority)
+            simulated_environment = self._new(environment, id, new_values, new_priority)
         if set_addr is not None:
-            simulated_environment, set_status = self._set(simulated_environment, id, set_addr, set_values, set_priority, set_write_enabled, set_free_enabled)
+            simulated_environment, set_status = self._set(environment, id, set_addr, set_values, set_priority, set_write_enabled, set_free_enabled)
         if get_status is not None:
-            simulated_environment, get_status = self._get(simulated_environment, id, get_addr, get_values, get_priority)
+            simulated_environment, get_status = self._get(environment, id, get_addr, get_values, get_priority)
 
+        #TODO: Update so that this stores the environment, THEN returns
         return release_status, set_status, new_status, get_status
+
+    @staticmethod
+    def _set_updates(storage: Storage,
+                     addresses: torch.Tensor):
+        """ Sets anything which accesses the addresses
+        as having experienced an update"""
+
+        owners_experiencing_updates = storage.owner[addresses] #(N, L)
+        possible_owners = torch.arange(owners_experiencing_updates.shape[1], dtype=torch.int64, device=storage.device).view(-1, 1) #(L, 1)
+        updating_owners = owners_experiencing_updates.matmul(possible_owners)
+        updating_owners = torch.concat([updating_owners, storage.updates])
+        updating_owners = updating_owners.unique()
+        storage.updates = updating_owners
+        return storage
+
+
+
+
+    @staticmethod
+    def _release(storage: Storage,
+                 addresses: torch.Tensor):
+        storage.owner[addresses, :] = False
+        return storage
+
+    @staticmethod
+    def _set(storage: Storage,
+             id: torch.Tensor,
+             addresses: torch.Tensor,
+             value: torch.Tensor,
+             index: torch.Tensor,
+             priority: torch.Tensor,
+             ):
+
+        storage.owner[addresses, id] = True
+        storage.value[addresses] = value
+        storage.index[addresses] = index
+        storage.priority[addresses] = priority
+        return storage
+
+    @staticmethod
+    def _new(storage: Storage,
+             id: torch.Tensor,
+             value: torch.Tensor,
+             index: torch.Tensor,
+             priority: torch.Tensor):
+
+        if storage.free < value.shape[0]:
+            #Not enough memory left. Go into memory freeing routine.
+
+            active = storage.owner.any(dim=-1)
+            active = storage.addresses.masked_select(active)
+
+            net_value = storage.value[active]
+            net_priority = storage.priority[active]
+            net_index = storage.index[active]
+
+            data_priority, data_index = storage.value[active], storage.
+
+            score = torch.concat([storage.value*storage.priority, value*priority])
+
+            score = torch.abs(score)
+            sort_indices = torch.argsort(score, descending=True)
+            kept, discarded = sort_indices[:storage.total]
+
+    def set(self,
+            id: torch.Tensor,
+            index: torch.Tensor,
+            value: torch.Tensor,
+            priority: torch.Tensor,
+
+            )-> Union[Exception, None]:
+
+        #Calculate required operations. release, set, new.
+
+        master_addresses = self._storage.addresses.masked_select(self._storage.owner[:, id])
+        item_addresses = torch.arange(index.shape[0], dtype=torch.int64, device=self.device)
+        master_index = self._storage.index[master_addresses, :]
+
+        broadcast_master = master_index.unsqueeze(0) #(1, new, 2)
+        broadcast_item = index.unsqueeze(1), #(current, 1, 2)
+        exchange_bool = (broadcast_item == broadcast_master).all(dim=-1) #(new, current)
+
+        #Generate masks
+
+        is_set_master_mask = exchange_bool.any(dim=0)
+        is_set_item_mask = exchange_bool.any(dim=1)
+
+        is_discarded_mask = torch.logical_not(is_set_master_mask)
+        is_new_mask = torch.logical_not(is_set_item_mask)
+
+        #Generate addresses. Both global, and local.
+
+        set_master_addresses = master_addresses.masked_select(is_set_master_mask)
+        discarded_master_addresses = master_addresses.masked_select(is_discarded_mask)
+
+        set_item_addresses = item_addresses.masked_select(is_set_item_mask)
+        new_item_addresses = item_addresses.masked_select(is_new_mask)
+
+        #Generate set and new subsections
+
+        set_value = value[set_item_addresses]
+        set_priority = priority[set_item_addresses]
+        set_index = index[set_item_addresses]
+
+        new_value = value[new_item_addresses]
+        new_priority = priority[new_item_addresses]
+        new_index = index[new_item_addresses]
+
+        #Use my now constructed addresses to perform updates. Do first the
+        #release update, then the set update, then the new update.
+
+        environment = self._storage.copy()
+        environment = self._release(environment, discarded_master_addresses)
+        environment = self._set(environment, id,  set_master_addresses, set_value, set_index, set_priority)
+        environment = self._new(environment, new_value, new_index, new_priority)
+
+
+        self._storage.from_copy(environment)
+
+
+
+
+
+
+
+
+
+        #Divide the items into sections requiring release, set, and new generation
+
+        release_addr = master_addresses.masked_select(is_discarded_mask)
+        set_addr = master_addresses.masked_select(is_set_current_mask)
+
+        set_new_addr =
+
+
+
+
+        environment = self._storage.copy()
+
+        owned_addresses = torch.arange(self.total, dtype=torch.int64, device=self.device)
+        owned_addresses = owned_addresses.masked_select(environment.owner[:, id])
+
+        owned_index = environment.index[owned_addresses, :]
+        owned_value = environment.value[owned_addresses]
+        owned_priority = environment.priority[owned_addresses]
+
+
+
+
+
+
+
+    def __init__(self,
+                 quantity: int,
+                 device,
+                 dtype,
+                 requires_grad=True):
+        super().__init__()
+
+        #Ownership, priority, and index setup, plus transfer buffer
+        owner = torch.empty([quantity, 0], dtype=torch.bool, device=device)
+        index = torch.empty([quantity, 2], dtype=torch.int64, device=device)
+        priority = torch.full([quantity], 1.0, dtype=torch.float16, device=device)
+        transfer = torch.empty([quantity], dtype=dtype, device=device)
+
+        value = torch.empty([quantity], dtype=dtype, requires_grad=requires_grad, device=device)
+        value = nn.Parameter(value, requires_grad=requires_grad)
+
+        self._storage = Storage(owner, index, priority, value, transfer)
+
+        #Store static
+        self._dtype = dtype
+        self._requires_grad = requires_grad
+
+
+
+
+
+class ParamServer(nn.Module):
+    """
+
+
+
+    The base class for the involved parameter server.
+
+    This class is responsible for declaring a parameter space
+    which can be served from, and handling transact queries
+    from any attached StorageModules. It performs parameter
+    authentication, as well as get, set, release, and new handling.
+
+    Importantly, all subclasses of this must implement transact. Also,
+    of note, violating permission rules does NOT throw an error. Instead,
+    the server determined how to handle the situation, and only returns addresses
+    to the items which did successfully persist or execute. Access rule violation
+    however, does throw an error.
+
+
+    """
+    ### Helper functions ###
+    def _mask2index(self, mask):
+        """ A small function """
+        assert torch.all(mask.sum(-1) == 1)
+        index = torch.arange(mask.shape[-1], dtype=torch.int64).view(-1, 1)
+        index = mask.matmul(index).squeeze()
+        return index
+
+    ### Memory information properties ###
+    @property
+    def total(self):
+        """ The total amount of memory"""
+        return self._active.shape[0]
+    @property
+    def free(self):
+        """ The amount of free memory"""
+        return self.total - self._active.sum()
+    @property
+    def used(self):
+        """ The amount of used memory"""
+        return self._active.sum()
+
+
     def __init__(self,
                  quantity: int,
                  device: torch.device,
@@ -877,16 +966,9 @@ class ParamServer(nn.Module):
         #Create permission and activity trackers. Follow these
         #up with memory change flags. Then register these as buffers
 
-        self._active = torch.full([quantity], False, device=device)
-        self._ids = -torch.ones([quantity], dtype=torch.int32)
 
-        self._free_enabled = torch.full([quantity], True, device=device)
-        self._write_enabled = torch.full([quantity], True, device=device)
 
-        self.register_buffer('_active', self._active)
-        self.register_buffer('_ids', self._ids)
-        self.register_buffer('_free_enabled', self._free_enabled)
-        self.register_buffer('_write_enabled', self._write_enabled)
+
 
 
         #Create memory and module storage
@@ -909,49 +991,5 @@ class ParamServer(nn.Module):
         # TODO: This will not stay around in a saveload cycle. Fix
         self._reclamation_activation = reclamation_activation
 
+        #Store DistributedParallel idflag. If this does NOT eq
 
-
-
-class CSRParamMemory(nn.Module):
-    """
-    Create a new common parameter memory backend for any number of CSR
-    SparseParameters.
-    """
-    def __getitem__(self, item):
-
-
-
-    def __init__(self,
-                 quantity: int,
-                 device: torch.device,
-                 dtype: torch.dtype,
-                 throw_on_overflow: Optional[bool] = None,
-                 overflow_activation: Optional[Callable] = None,
-                 requires_grad: bool = True):
-
-        # Start torch
-        super().__init__()
-
-        # Handle overflow defaults
-        if trim_overflow is None:
-            trim_overflow = True
-        if overflow_activation is None:
-            overflow_activation = torch.abs
-
-        # Store overflow parameters
-
-        self.overflow = trim_overflow
-        self.activation = overflow_activation
-
-        # Create the pool, storage, and addressing space.
-        allocated = torch.full([quantity], False)
-        values = torch.empty([quantity],
-                             dtype=dtype,
-                             device=device,
-                             requires_grad=requires_grad)
-
-        storage = nn.ModuleList()
-
-        self.register_buffer('_allocated', allocated)
-        self.register_parameter('_values', nn.Parameter(values, requires_grad=requires_grad))
-        self.storage = storage
