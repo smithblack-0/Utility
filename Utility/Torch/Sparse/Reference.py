@@ -171,6 +171,6 @@ class Reference(nn.Module):
         self._cache_version = torch.Tensor(0, dtype=torch.int64, device=device)
 
         self.register_buffer('_id', self._id)
-        self.register_buffer('_latest_version', self._id)
+        self.register_buffer('_latest_version', self._latest_version)
         self._backend = backend
 
