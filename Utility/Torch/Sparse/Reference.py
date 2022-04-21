@@ -1,17 +1,33 @@
 import torch
 from torch import nn
-from torch_sparse import SparseStorage
 
 
 class Reference(nn.Module):
     """
     An interface to a memory backend.
+
+    With the exception of the id for this memory access point, nothing
+    is actually stored on this object. Instead, it acts as a clear
+    passthrough to the assigned memory region, allowing the reservation
+    and setting of values, index, and priority parameters, along
+    with verison information
+
+    Features include the ability to set index, value, and priority information
+    directly from the instance, the ability to release the current allocation,
+    and the ability to attempt to set an allocation.
+
+    The word "attempt" bears a little explanation. It is the case that the
+    reference hands off the allocation to the memory backend. It is up to
+    the backend to decide whether or not it will set aside memory. It may
+    decide not to if, for example, there is not enough remaining and the
+    magnitude is too low.
     """
     ### Static ###
     @property
     def version(self):
         """The modification version. Used to tell when to rebuild"""
-        return self._latest_version
+        id = self._id.to(self._backend.device)
+        return self._backend.latest_version[id]
     @property
     def reference(self):
         """ A lookup to the underlying bool reference"""
@@ -87,15 +103,57 @@ class Reference(nn.Module):
     #Functions
     def release(self):
         """
-
         Release the currently assigned memory block
-
         """
         with torch.no_grad():
 
-            fill = torch.full([self._backend.length], False, device=self._backend.device)
-            self.reference = fill
+            id = self._id.to(self._backend.device)
+            self._backend.release(id)
             self.tick()
+    def set(self,
+            index: torch.Tensor,
+            value: torch.Tensor,
+            priority: torch.Tensor
+            ):
+      """
+      Request to set the memory buffer to match the provided
+      pattern. Release everything first.
+
+      :param index: The int64 index tensor
+      :param value: The dtype 1D value tensor
+      :param priority: The dtype 1D priority tensor
+      :return: None
+      """
+      assert torch.is_tensor(index)
+      assert torch.is_tensor(value)
+      assert torch.is_tensor(priority)
+
+      assert index.dim() == 2
+      assert value.dim() == 1
+      assert priority.dim() == 1
+
+      length = index.shape[0]
+      assert value.shape[0] == length
+      assert priority.shape[0] == length
+
+      assert index.shape[1] == 2
+
+      assert index.dtype == self._backend.index.dtype
+      assert value.dtype == self._backend.value.dtype
+      assert priority.dtype == self._backend.priority.dtype
+
+      with torch.no_grad():
+          if self.reference.any() is not False:
+              self.release()
+
+          id = self._id.to(self._backend.device)
+          index = index.to(self._backend.device)
+          value = value.to(self._backend.device)
+          priority = priority.to(self._backend.device)
+
+          self._backend.reserve(id, index, value, priority)
+          self.tick()
+
 
     def reserve(self,
                 index: torch.Tensor,
@@ -105,6 +163,9 @@ class Reference(nn.Module):
 
         Request a reservation for the given
         index, value, priority sequence.
+
+        Does NOT release the current memory before executing. Instead,
+        requests new memory for all the entries.
 
         :param index: The int64 index tensor
         :param value: The dtype 1D value tensor
@@ -131,30 +192,25 @@ class Reference(nn.Module):
         assert priority.dtype == self._backend.priority.dtype
 
         with torch.no_grad():
-            if self._reference is not None:
-                self.release()
-
             id = self._id.to(self._backend.device)
             index = index.to(self._backend.device)
             value = value.to(self._backend.device)
             priority = priority.to(self._backend.device)
 
-            self._backend.reserve(id, index, value, priority).to(self.device)
+            self._backend.reserve(id, index, value, priority)
             self.tick()
 
     def tick(self):
         """ Increases the version count by 1"""
-        self._latest_version += 1
+        id = self._id.to(self._backend.device)
+        self._backend.latest_version[id] += 1
 
     def __init__(self,
                  backend,
                  device=None):
         super().__init__()
 
-        self._id = backend.register(self)
-        self._latest_version = torch.Tensor(0, dtype=torch.int64, device=device)
-
-        self.register_buffer('_id', self._id)
-        self.register_buffer('_latest_version', self._latest_version)
+        id = backend.register(self).to(device)
+        self.register_buffer('_id', id)
         self._backend = backend
 

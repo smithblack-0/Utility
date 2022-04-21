@@ -409,19 +409,17 @@ class ArchStorageModule(nn.Module):
         assert isinstance(backend, ParamServer)
 
         # Store persistent placeholders.
-        self._rowptr = torch.empty([0], dtype=torch.int64, device=device)
-        self._col = torch.empty([0], dtype=torch.int64, device=device)
-        self._addr_mask = torch.full([backend.total], False, device=device)
+        self._reference = torch.full([backend.total], False)
         self._id = torch.Tensor(hash(uuid.uuid1()), device=device, dtype=torch.int32)
 
-        self.register_buffer('_rowptr', self._rowptr)
-        self.register_buffer('_col', self._col)
-        self.register_buffer('_addr_mask', self._addr_mask)
+        self.register_buffer('_reference', self._reference)
         self.register_buffer('_id', self._id)
 
         #store backend and default priority
         self._backend = backend
         self.default = default_priority
+
+
 
 
 class Storage(nn.Module):
@@ -747,25 +745,24 @@ class ParamMan(nn.Module):
     def _release(storage: Storage,
                  addresses: torch.Tensor):
         storage.owner[addresses, :] = False
+        storage.priority[addresses] = 0
         return storage
 
     @staticmethod
     def _set(storage: Storage,
-             id: torch.Tensor,
              addresses: torch.Tensor,
-             value: torch.Tensor,
-             index: torch.Tensor,
-             priority: torch.Tensor,
+             value: Union[torch.Tensor, None],
+             priority: Union[torch.Tensor, None]
              ):
 
-        storage.owner[addresses, id] = True
-        storage.value[addresses] = value
-        storage.index[addresses] = index
-        storage.priority[addresses] = priority
+        if value is not None:
+            storage.value[addresses] = value
+        if priority is not None:
+            storage.priority[addresses] = priority
         return storage
 
-    @staticmethod
-    def _new(storage: Storage,
+    @classmethod
+    def _new(cls, storage: Storage,
              id: torch.Tensor,
              value: torch.Tensor,
              index: torch.Tensor,
@@ -774,20 +771,37 @@ class ParamMan(nn.Module):
         if storage.free < value.shape[0]:
             #Not enough memory left. Go into memory freeing routine.
 
-            active = storage.owner.any(dim=-1)
-            active = storage.addresses.masked_select(active)
+            source_master = torch.full(storage.length, True, device=storage.device)
+            source_new = torch.full(value.shape[0], False, device=storage.device)
+            new_addresses = torch.arange(value.shape[0], dtype=torch.int64, device=storage.device)
 
-            net_value = storage.value[active]
-            net_priority = storage.priority[active]
-            net_index = storage.index[active]
+            sources = torch.concat([source_master, source_new])
+            net_addresses = torch.concat([storage.addresses, new_addresses])
+            net_value = torch.concat([storage.value, value], dim=-1)
+            net_priority = torch.concat([storage.priority, priority], dim=-1)
+            net_score = net_value*net_priority
 
-            data_priority, data_index = storage.value[active], storage.
+            #TODO: Replace with activation
+            net_score = torch.abs(net_score)
 
-            score = torch.concat([storage.value*storage.priority, value*priority])
+            permuter = torch.argsort(net_score, descending=True)
+            final_addresses = net_addresses[permuter]
+            final_sources = sources[permuter]
 
-            score = torch.abs(score)
-            sort_indices = torch.argsort(score, descending=True)
-            kept, discarded = sort_indices[:storage.total]
+            retained_addresses = final_addresses[:storage.length]
+            released_addresses = final_addresses[storage.length:]
+
+            retained_sources = torch.logical_not(final_sources[:storage.length])
+            released_sources = final_sources[storage.length:]
+
+            master_addresses_needing_release =  released_addresses.masked_select(released_sources)
+            item_addresses_getting_set = retained_addresses.masked_select(retained_sources)
+
+            storage = cls._release(storage, master_addresses_needing_release)
+            index = index[item_addresses_getting_set]
+            value = value[item_addresses_getting_set]
+            priority = priority[item_addresses_getting_set
+
 
     def set(self,
             id: torch.Tensor,
@@ -825,12 +839,19 @@ class ParamMan(nn.Module):
 
         #Generate set and new subsections
 
-        set_value = value[set_item_addresses]
-        set_priority = priority[set_item_addresses]
-        set_index = index[set_item_addresses]
+        set_value = None
+        new_value = None
 
-        new_value = value[new_item_addresses]
-        new_priority = priority[new_item_addresses]
+        set_priority = None
+        new_priority = None
+
+        if value is not None:
+            set_value = value[set_item_addresses]
+            new_value = value[new_item_addresses]
+        if priority is not None:
+            set_priority = priority[set_item_addresses]
+            new_priority = priority[new_item_addresses]
+
         new_index = index[new_item_addresses]
 
         #Use my now constructed addresses to perform updates. Do first the
@@ -838,10 +859,10 @@ class ParamMan(nn.Module):
 
         environment = self._storage.copy()
         environment = self._release(environment, discarded_master_addresses)
-        environment = self._set(environment, id,  set_master_addresses, set_value, set_index, set_priority)
+        environment = self._set(environment, set_master_addresses, set_value, set_priority)
         environment = self._new(environment, new_value, new_index, new_priority)
 
-
+        modified = environment.
         self._storage.from_copy(environment)
 
 
@@ -887,7 +908,7 @@ class ParamMan(nn.Module):
         #Ownership, priority, and index setup, plus transfer buffer
         owner = torch.empty([quantity, 0], dtype=torch.bool, device=device)
         index = torch.empty([quantity, 2], dtype=torch.int64, device=device)
-        priority = torch.full([quantity], 1.0, dtype=torch.float16, device=device)
+        priority = torch.full([quantity], 0, dtype=torch.float16, device=device)
         transfer = torch.empty([quantity], dtype=dtype, device=device)
 
         value = torch.empty([quantity], dtype=dtype, requires_grad=requires_grad, device=device)
