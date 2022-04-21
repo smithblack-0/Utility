@@ -9,22 +9,6 @@ class Reference(nn.Module):
     """
     ### Static ###
     @property
-    def storage(self):
-        """ The stored sparse representation. Returned!"""
-        if not hasattr(self, '_cached_storage') or self.version != self._cache_version:
-            row = self.index[:, 0]
-            col = self.index[:, 1]
-            value = self.value
-            self._cache_storage = SparseStorage(row = row,
-                                        col=col,
-                                        value=value,
-                                        is_sorted=True,
-                                        trust_data=True)
-            self._cache_version = self._latest_version.clone()
-        return self._cache_storage
-
-
-    @property
     def version(self):
         """The modification version. Used to tell when to rebuild"""
         return self._latest_version
@@ -161,6 +145,7 @@ class Reference(nn.Module):
     def tick(self):
         """ Increases the version count by 1"""
         self._latest_version += 1
+
     def __init__(self,
                  backend,
                  device=None):
@@ -168,7 +153,6 @@ class Reference(nn.Module):
 
         self._id = backend.register(self)
         self._latest_version = torch.Tensor(0, dtype=torch.int64, device=device)
-        self._cache_version = torch.Tensor(0, dtype=torch.int64, device=device)
 
         self.register_buffer('_id', self._id)
         self.register_buffer('_latest_version', self._latest_version)
