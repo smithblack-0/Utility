@@ -13,13 +13,13 @@ local
 
 
 """
-
 import torch
-import numbers
-import numpy as np
+from typing import Union, Sequence, List, Tuple
 
-
-def view(tensor, input_shape: "tuple, int", output_shape: "tuple, int"):
+@torch.jit.script
+def view(tensor,
+         input_shape: Union[torch.Tensor, List[int], int],
+         output_shape: Union[torch.Tensor, List[int], int]) -> torch.Tensor:
     """
     This will, when passed an input shape and compatible output shape, assume that said shapes
     refer to the later dimensions in a tensor, as in broadcasting, and will perform a reshape from
@@ -52,29 +52,41 @@ def view(tensor, input_shape: "tuple, int", output_shape: "tuple, int"):
 
     """
 
-    # Raw  conversion
+    # Raw Type converison. The goal here is to end up with something solely
+    # in terms of tensors.
 
-    if isinstance(input_shape, numbers.Number):
+    if torch.jit.isinstance(input_shape, int):
         input_shape = [input_shape]
-    if isinstance(output_shape, numbers.Number):
+    if torch.jit.isinstance(output_shape, int):
         output_shape = [output_shape]
 
+    if torch.jit.isinstance(input_shape, List[int]):
+        input_shape = torch.tensor(input_shape, dtype=torch.int64)
+    if torch.jit.isinstance(output_shape, List[int]):
+        output_shape = torch.tensor(output_shape, dtype=torch.int64)
+
+    torch.jit.annotate(torch.Tensor, input_shape)
+    torch.jit.annotate(torch.Tensor, output_shape)
+
     # Basic sanity testing
-    assert np.prod(input_shape) == np.prod(
-        output_shape), "Shapes incompatible: Input shape and output shape were not compatible: "
+    assert input_shape.prod() == output_shape.prod()\
+        , "Shapes incompatible: Input shape and output shape were not compatible: "
 
-    slice_length = len(input_shape)
-    assert np.array_equal(input_shape, tensor.shape[-slice_length:]), "Input shape and tensor shape not compatible"
+    #Perform view action.
+    slice_length: int = len(input_shape)
+    static_shape: torch.Tensor = torch.tensor(tensor.shape[:-slice_length], dtype=torch.int64)
 
-    # Construct view resize
+    final_shape: torch.Tensor = torch.concat([static_shape, output_shape])
+    final_shape: List[int] = final_shape.tolist()
 
-    new_view = [*tensor.shape[:-slice_length], *output_shape]
+    output: torch.Tensor = tensor.view(final_shape)
+    return output
 
-    # view. Return
-    return tensor.view(new_view)
-
-
-def local(tensor, kernel_width: int, stride_rate: int, dilation_rate: int):
+@torch.jit.script
+def local(tensor: torch.Tensor,
+          kernel_width: int,
+          stride_rate: int,
+          dilation_rate: int):
     """
 
     Description:
@@ -98,11 +110,14 @@ def local(tensor, kernel_width: int, stride_rate: int, dilation_rate: int):
 
     # Input Validation
 
+    """   
+    ToRemove: Validated by jit
     assert torch.is_tensor(tensor), "Input 'tensor' was not a torch tensor"
 
     assert isinstance(kernel_width, numbers.Integral), "kernel_width was not an integer. Was %s" % type(kernel_width)
     assert isinstance(stride_rate, numbers.Integral), "stride_rate was not an integer. Was %s" % type(stride_rate)
     assert isinstance(dilation_rate, numbers.Integral), "dilation_rate was not an integer. Was %s" % type(dilation_rate)
+    """
 
     assert kernel_width >= 1, "kernel_width should be greater than or equal to 1"
     assert stride_rate >= 1, "stride_rate should be greater than or equal to 1"
@@ -114,20 +129,29 @@ def local(tensor, kernel_width: int, stride_rate: int, dilation_rate: int):
     # data buffer a naive implimentation would go, in an additive manner. Striding, meanwhile
     # is a multiplictive factor
 
-    compensation = (kernel_width - 1) * dilation_rate  # calculate dilation-kernel correction
+    compensation: int = (kernel_width - 1) * dilation_rate  # calculate dilation-kernel correction
     final_index_shape = tensor.shape[-1] - compensation  # apply
-    assert final_index_shape > 0, "Configuration is not possible - final kernel exceeds available tensors"
+    assert final_index_shape > 0, "Configuration is not possible - final kernel length exceeds available tensors"
     final_index_shape = final_index_shape // stride_rate  # Perform striding correction.
-    final_shape = (*tensor.shape[:-1], final_index_shape, kernel_width)  # Final shape
+
+    static_shape = torch.tensor(tensor.shape[:-1], dtype=torch.int64)
+    dynamic_shape = torch.tensor((final_index_shape, kernel_width), dtype=torch.int64)
+    final_shape = torch.concat([static_shape, dynamic_shape])
 
     # Construct the stride. The main worry here is to ensure that the dilation striding, and primary
     # striding, now occurs at the correct rate. This is done by taking the current one, multiplying,
     # and putting this in the appropriate location.
 
-    final_stride = (*tensor.stride()[:-1], stride_rate * tensor.stride()[-1], dilation_rate * tensor.stride()[-1])
+    input_stride = [tensor.stride(dim) for dim in range(tensor.dim())] #Workaround for bad typing on Tensor.stride
 
-    # perform extraction
+    static_stride = torch.tensor(input_stride[:-1], dtype=torch.int64)
+    dynamic_stride = torch.tensor((stride_rate * input_stride[-1], dilation_rate * input_stride[-1]), dtype=torch.int64)
+    final_stride = torch.concat([static_stride, dynamic_stride])
 
+    # perform extraction. Return result
+
+    final_shape: List[int] = final_shape.tolist()
+    final_stride: List[int] = final_stride.tolist()
     return tensor.as_strided(final_shape, final_stride)
 
 
