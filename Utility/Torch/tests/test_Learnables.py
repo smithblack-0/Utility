@@ -20,9 +20,9 @@ class testLinear(unittest.TestCase):
         tensor = torch.rand([30, 20, 15])
 
         #Define test layers
-        test_expansion = Learnables.Linear(15, (5, 3))
-        test_collapse = Learnables.Linear((20, 15), 300)
-        test_both = Learnables.Linear((20, 15), (10, 30))
+        test_expansion = Learnables.Linear(15, [5, 3])
+        test_collapse = Learnables.Linear([20, 15], 300)
+        test_both = Learnables.Linear([20, 15], [10, 30])
 
         #Perform tests
 
@@ -77,7 +77,7 @@ class testLinear(unittest.TestCase):
         test_tensor = torch.randn([20, 10])
         
         #Develop test layer
-        test_grad = Learnables.Linear((20, 10), 1)t
+        test_grad = Learnables.Linear([20, 10], 1)
         
         #Develop optim
         test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)
@@ -87,5 +87,24 @@ class testLinear(unittest.TestCase):
         test_result.backward()
         
         test_optim.step()
+    def test_jit_basic(self):
+        """ Test whether or not the module is scriptable when instanced"""
+        # Develop test layer
+        test_tensor = torch.randn([30, 20, 20])
+        test_script = Learnables.Linear(20, 10, 1)
 
+        #Perform test
+        scripted = torch.jit.script(test_script)
+        scripted(test_tensor)
 
+class testBandedAttn(unittest.TestCase):
+    def testBasic(self):
+        query = torch.randn([3, 10, 20])
+        key = query.clone()
+        value = query.clone()
+
+        tester = Learnables.BandedMultiheadedAttention(20, 20, 3, 4)
+        tester(query, key, value)
+
+if __name__ == "__main__":
+    unittest.main()

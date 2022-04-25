@@ -3,6 +3,15 @@ import torch
 
 from Utility.Torch import Glimpses
 
+class testView(unittest.TestCase):
+    def testBasic(self):
+        """ Tests whether view works """
+        test_tensor = torch.randn([20, 30, 10])
+        Glimpses.view(test_tensor, 10, [5,2])
+        Glimpses.view(test_tensor, [30, 10], [50, 6])
+        Glimpses.view(test_tensor, torch.tensor([30, 10]),torch.tensor([50, 6]))
+        Glimpses.view(test_tensor, torch.tensor([30, 10]), torch.tensor([50, 6], dtype=torch.int32))
+
 
 class testLocal(unittest.TestCase):
     def testAsLayer(self):
@@ -94,7 +103,33 @@ class testLocal(unittest.TestCase):
         test = Glimpses.local(tensor, kernel, striding, dilation)
         test = torch.all(final == test)
         self.assertTrue(test, "Logical failure: buffer issues")
+    def testWhenSliced(self):
+        """
+        Test if a tensor which is a view through a slice works."""
 
+        # make tensor
+        tensor = torch.arange(20)
+        tensor = tensor.view((2, 10))  # This is what the final buffer should be viewed with respect to
+        tensor = tensor[:, 2:6]
+        # Declare kernel, striding, final
+        kernel, striding, dilation = 2, 2, 2
+
+        # Make expected final
+        final = []
+        final.append([[2, 4]])
+        final.append([[12, 14]])
+        final = torch.tensor(final)
+
+        # test
+        test = Glimpses.local(tensor, kernel, striding, dilation)
+
+
+        print(final)
+        print(tensor)
+        print(test)
+
+        test = torch.all(final == test)
+        self.assertTrue(test, "Logical failure: buffer issues")
 
 class testCompressDecompress(unittest.TestCase):
     """
