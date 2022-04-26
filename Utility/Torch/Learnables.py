@@ -125,27 +125,19 @@ class BandedMultiheadedAttention(nn.Module):
     views are used to keep this a memory efficient operation.
     """
     @staticmethod
-    def localize(tensor, kernel, head, striding, dilation):
-        tensor = tensor[..., head, :]
-        tensor = Glimpses.local(tensor, kernel, striding, dilation)
-        return tensor
-    @staticmethod
     def band_attn(result):
         """ Performs attention """
 
         query, key, value = result.value()
-        query = query.value() #(..., band, d_query)
-        key = key.value() #(..., band, d_content)
-        value = value.value() #(..., items, band, d_content)
+        query = query.value() #(...,item,  diag_index, d_query)
+        key = key.value() #(..., item,    ,, d_query)
+        value = value.value() #(..., item, diag_index, d_content)
 
-        query = query
-        key = key.transpose(-1, -2)
-        value = value
 
-        score = query.matmul(key)
+        score = torch.mul(query, key).sum(dim=-1)
         score = torch.softmax(score, dim=-1)
 
-        outcome = score.matmul(value).sum(dim=)
+        outcome = score.matmul(value)
         return outcome
 
     def _uneven_length_compensation(self, query_length, content_length):
@@ -183,89 +175,126 @@ class BandedMultiheadedAttention(nn.Module):
             content_kernel = content_kernel + content_length % query_length
 
         return (query_kernel, query_step),  (content_kernel, content_step)
-    def __init__(self,
-                 d_query: int,
-                 d_content: int,
-                 kernel_width: int,
-                 heads: int = None,
 
-                 query_dilations: Optional[Sequence[int]] = None,
-                 content_dilations: Optional[Sequence[int]] = None,
+    def __init__(self,
+                 d_model: int,
+                 kernel_width: int,
+                 heads: int = 5,
+                 dilation_rates: Optional[List[int]] = None,
+                 offsets: Optional[List[int]] = None,
                  ):
+        """
+
+        :param d_model: The width of the embeddings
+        :param kernel_width: How wide to make the key-value extraction kernel
+        :param heads: How many different heads to make
+        :param dilation_rates: The dilation rate per head. MUST match head length if defined
+        :param offsets: The offsets per head. MUST match head length if defined
+        """
+
         #Start torch
         super().__init__()
 
         #assert
 
-        assert isinstance(d_query, int)
-        assert isinstance(d_content, int)
+        assert isinstance(d_model, int)
         assert isinstance(kernel_width, int)
         assert isinstance(heads, int)
 
-        make = lambda x: torch.Tensor(x)
-        query_dilations = make(query_dilations) if query_dilations is not None else torch.ones([heads])
-        content_dilations = make(content_dilations) if content_dilations is not None else torch.ones([heads])
+        assert d_model >= 1
+        assert kernel_width >= 1
+        assert heads >= 1
 
-        assert query_dilations.dim() == 1
-        assert content_dilations.dim() == 1
+        if dilation_rates is None:
+            dilation_rates = [1]*heads
+        if offsets is None:
+            offsets = [0]*heads
 
-        assert heads == query_dilations.shape[0]
-        assert heads == content_dilations.shape[0]
+        assert len(dilation_rates) == heads
+        assert len(offsets) == heads
 
-        #Passed. Create basic parameter arrays.
+        dilation_rates = torch.Tensor(dilation_rates)
+        offsets = torch.Tensor(offsets)
 
-        self._Query = Linear(d_query, (heads, d_query//heads))
-        self._Key = Linear(d_content, (heads, d_content//heads))
-        self._Value = Linear(d_content, (heads, d_content//heads))
-        self._Collapse = Linear((heads, d_content//heads), d_content)
+        #Store persistant useful constants
 
-        #Store constants
-
-        self.kernel_shape = kernel_width
-        self.query_dilations = query_dilations
-        self.content_dilations = content_dilations
         self.heads = heads
+        self.kernel = kernel_width
+        self.dilation = dilation_rates
+        self.offset = offsets
+
+        # Create projection layers.
+
+        self._Query = Linear(d_model, d_model//heads, heads)
+        self._Key = Linear(d_model, d_model//heads, heads)
+        self._Value = Linear(d_model, d_model//heads, heads)
+        self._Collapse = Linear([heads, d_model//heads], d_model)
+
+
     def forward(self, query, key, value):
 
-        #Perform the heading projections
-
-        query = self._Query(query)
-        key = self._Key(key)
-        value = self._Value(value)
-
-        #As it stands at this point, it may be the case that the query and content length do not
-        #match. To compensate for this, develop a kernel-striding combination by which the quantities
-        #in each nicely line up. After this, the total number of bands will be the same between the
-        #sections
-
+        #Handle the cases where the query and content do not have the same item length, by
+        #resizing stride and kernels as appropriate.
         query_length = query.shape[-2]
         content_length = key.shape[-2]
-        compensation = self._uneven_length_compensation(query_length, content_length)
-        (query_kernel, query_stride), (content_kernel, content_stride) = compensation
+        kernel = self.kernel
+        if query_length // content_length > 1:
+            # Content fits into query more than once. Adjust step
 
-        #Working with different dilations is not very parallizable natively. Use jit futures to allow
-        #forking
+            query_step = query_length // content_length
+            content_step = 1
+        elif content_length // query_length > 1:
+            #Query fits into content more than once. Adjust step
 
-        localization_futures = []
-        for head, query_dil, content_dil in zip(range(self.heads), self.query_dilations, self.content_dilations):
-            local_futures = []
-            local_futures.append(torch.jit.fork(self.localize, query, query_kernel,
-                                               head, query_stride, query_dil))
-            local_futures.append(torch.jit.fork(self.localize, key, content_kernel,
-                                               head, content_stride, content_dil))
-            local_futures.append(torch.jit.fork(self.localize, value, content_kernel,
-                                               head, content_stride, content_dil))
-            total_future = torch.futures.collect_all(local_futures)
-            localization_futures.append(total_future)
+            query_step = 1
+            content_step = content_length // query_length
+        else:
+            query_step = 1
+            content_step = 1
 
-        attention_futures = []
-        for item in localization_futures:
-            attention_futures.append(item.then(self.attn))
+        query_kernel = query_step
+        content_kernel = content_step * kernel
 
-        attention_results = torch.futures.wait_all(attention_futures)
-        attention_results = torch.stack(attention_results, dim=-2)
+        if query_length > content_length:
+            query_kernel = query_kernel + query_length % content_length
+        if content_length > query_length:
+            content_kernel = content_kernel + content_length % query_length
 
-        final_result = self._Collapse(attention_results)
+        #Localize all entries, and create the dilation heads.
+        query = query.transpose(-1, -2) #(batch, d_model, items)
+        key = key.transpose(-1, -2)
+        value = value.transpose(-1, -2)
+
+        local_queries = Glimpses.dilocal(query, query_kernel, query_step, self.dilation_rates) #(batch, d_model, head, item, query_local)
+        local_keys = Glimpses.dilocal(key, content_kernel, content_step, self.dilation_rates)#(batch, d_model, head, item, local)
+        local_values = Glimpses.dilocal(value, content_kernel, content_step, self.dilation_rates) #(batch, d_model, head, item, local)
+
+        #Perform the heading interprojections, respectinve the existing heads
+
+        local_queries = local_queries.transpose(-3, -2).transpose(-4, -1) #(batch, query_local, item, head, d_model)
+        local_keys = local_keys.transpose(-3, -2).transpose(-4, 1) #(batch, local, item, head, d_model)
+        local_values = local_values.transpose(-3, -2).transpose(-4, -1)
+
+        local_queries = self._Query(local_queries) #(batch, query_local, item, head, d_small)
+        local_keys = self._Key(local_keys)
+        local_values = self._Value(local_values)
+
+        #Perform attention on the local axis
+
+        local_queries = local_queries.transpose(-4, -2) #(batch, head, item, query_local, d_small)
+        local_keys = local_keys.transpose(-4, -2) #(batch, head, item, local, d_small)
+        local_values = local_values.transpose(-4, -2)
+
+        score = torch.matmul(local_queries, local_keys.transpose(-1, -2)) #(batch, head, item, query_local, local)
+        score = torch.softmax(score, dim=-1)
+        attention = torch.matmul(score, local_values) #(batch, head, item, query_local, d_small)
+
+        #Delocalize, combine, and return
+
+        attention = attention.transpose(-1, -2).flatten(dim=-1) #(batch, head, item, d_small)
+        attention = attention.transpose(-2, -1) #(batch, item, head, d_small)
+        final_result = self._Collapse(attention) #(batch, item, d_model)
+        return final_result
 
 
 
