@@ -140,42 +140,6 @@ class BandedMultiheadedAttention(nn.Module):
         outcome = score.matmul(value)
         return outcome
 
-    def _uneven_length_compensation(self, query_length, content_length):
-        """
-
-        :param kernel: The length of the kernel
-        :param query_length: The length of the query
-        :param content_length: The length of the content
-        :return:
-        """
-
-        # Create the initial kernel shapes. Adapt for cases
-        # where one kernel is several factors larger than another
-        # by adjusting the kernel size and step rate
-        kernel = self.kernel_shape
-        if query_length // content_length > 1:
-            # These are different by enough to adjust the step factor
-
-            query_step = query_length // content_length
-            content_step = 1
-        elif content_length // query_length > 1:
-
-            query_step = 1
-            content_step = content_length // query_length
-        else:
-            query_step = 1
-            content_step = 1
-
-        query_kernel = query_step * kernel
-        content_kernel = content_step * kernel
-
-        if query_length > content_length:
-            query_kernel = query_kernel + query_length % content_length
-        if content_length > query_length:
-            content_kernel = content_kernel + content_length % query_length
-
-        return (query_kernel, query_step),  (content_kernel, content_step)
-
     def __init__(self,
                  d_model: int,
                  kernel_width: int,
