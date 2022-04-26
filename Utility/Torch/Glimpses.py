@@ -14,6 +14,8 @@ local
 
 """
 import torch
+from torch import nn
+from torch.nn import functional as F
 from typing import Union, Sequence, List, Tuple
 
 @torch.jit.script
@@ -82,11 +84,14 @@ def view(tensor,
     output: torch.Tensor = tensor.view(final_shape)
     return output
 
+
 @torch.jit.script
 def local(tensor: torch.Tensor,
           kernel_width: int,
           stride_rate: int,
-          dilation_rate: int,):
+          dilation_rate: int,
+          start_offset: int = 0,
+          end_offset: int = 0):
     """
 
     Description:
@@ -104,6 +109,7 @@ def local(tensor: torch.Tensor,
     Note that the different between initial and final indexing dimensions is:
         compensation = (kernel_width - 1) * dilation_rate
 
+    See 'dilocal' for a version of this which is fast when dealing with many dilations in parallel, as in banding.
     Padding by this much is guaranteed to prevent information loss.
 
     """
@@ -113,6 +119,8 @@ def local(tensor: torch.Tensor,
     assert kernel_width >= 1, "kernel_width should be greater than or equal to 1"
     assert stride_rate >= 1, "stride_rate should be greater than or equal to 1"
     assert dilation_rate >= 1, "dilation_rate should be greater than or equal to 1"
+    assert start_offset >= 0
+    assert end_offset >= 0
 
     # Construct shape. Take into account the kernel_width, dilation rate, and stride rate.
 
@@ -120,9 +128,13 @@ def local(tensor: torch.Tensor,
     # data buffer a naive implimentation would go, in an additive manner. Striding, meanwhile
     # is a multiplictive factor
 
-    compensation: int = (kernel_width - 1) * dilation_rate  # calculate dilation-kernel correction
-    final_index_shape = tensor.shape[-1] - compensation  # apply
-    assert final_index_shape > 0, "Configuration is not possible - final kernel length exceeds available tensors"
+    final_index_shape = tensor.shape[-1]
+    final_index_shape = final_index_shape - start_offset - end_offset
+    dilated_kernel_width = (kernel_width-1)*(dilation_rate-1) + kernel_width
+    assert final_index_shape >= dilated_kernel_width, \
+        ("With given start and end offset insufficient material remains for kernel", final_index_shape, dilated_kernel_width)
+
+    final_index_shape = final_index_shape - dilated_kernel_width + 1  # apply
     final_index_shape = final_index_shape // stride_rate  # Perform striding correction.
 
     static_shape = torch.tensor(tensor.shape[:-1], dtype=torch.int64)
@@ -143,7 +155,63 @@ def local(tensor: torch.Tensor,
 
     final_shape: List[int] = final_shape.tolist()
     final_stride: List[int] = final_stride.tolist()
-    return tensor.as_strided(final_shape, final_stride)
+    return tensor[..., start_offset:-end_offset].as_strided(final_shape, final_stride)
+
+@torch.jit.script
+def dilocal(tensor: torch.Tensor,
+               kernel_width: int,
+               stride_rate: int,
+               dilations: Union[List[int], torch.Tensor],
+               pad_to_input: bool = True,
+               pad_value: float = 0.0) -> torch.Tensor:
+    """
+
+    Performs the local operation in parallel with a variety of different dilations. Entries
+    are padded with zero if there would not be a reference in the original tensor, such as
+    edge dilations.
+
+    :param tensor: The input to localize
+    :param kernel_width: The kernel to use
+    :param stride_rate: The stride rate to use
+    :param dilations: A list of the dilations. Each one will end up on a head dimension
+    :param pad_to_input_size: Whether or not to ensure the output is as wide as the input.
+    :return: tensor. Has shape (dilations, items, kernel_width).
+    """
+    assert isinstance(kernel_width, int)
+    assert isinstance(stride_rate, int)
+    assert kernel_width % 2 == 1, "Kernel must be odd for clean mapping"
+
+    if not isinstance(dilations, torch.Tensor):
+        torch.jit.annotate(List[int], dilations)
+        dilations = torch.tensor(dilations, dtype=torch.int64)
+    torch.jit.annotate(torch.Tensor, dilations)
+
+    #Calculate the offsets and paddings required to create the padbuffer.
+
+    principle_padding = (kernel_width-1)*(dilations.max() - 1)
+    if pad_to_input:
+        total_padding = principle_padding + kernel_width-1
+    else:
+        total_padding = principle_padding
+
+    pad_op = (int(total_padding.item()//2), int(total_padding.item()//2))
+
+    particular_total_offsets = principle_padding - (kernel_width-1)*(dilations-1)
+    start_offsets = (particular_total_offsets/2).type(torch.int64)
+    end_offsets = (particular_total_offsets/2).type(torch.int64)
+
+    #Create the buffer, then create and stack the views.
+
+    buffer = F.pad(tensor, pad_op, value=pad_value)
+    local_views = []
+    for dilation, start_offset, end_offset in zip(dilations, start_offsets, end_offsets):
+        view_item = local(buffer, kernel_width, stride_rate, dilation, start_offset, end_offset)
+        local_views.append(view_item)
+    output = torch.stack(local_views, dim=-3)
+    return output
+
+
+
 
 
 def block(tensor, number):
@@ -161,3 +229,5 @@ def block(tensor, number):
     :return:
     """
     pass
+
+
