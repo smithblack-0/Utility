@@ -184,6 +184,7 @@ def dilocal(tensor: torch.Tensor,
     if not isinstance(dilations, torch.Tensor):
         torch.jit.annotate(List[int], dilations)
         dilations = torch.tensor(dilations, dtype=torch.int64)
+    dilations = torch.tensor(dilations, dtype=torch.int64)
     torch.jit.annotate(torch.Tensor, dilations)
 
     #Calculate the offsets and paddings required to create the padbuffer.

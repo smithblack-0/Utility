@@ -124,21 +124,6 @@ class BandedMultiheadedAttention(nn.Module):
     Banded attention performs attention within, suprise suprise, an exclusive, windowed band.
     views are used to keep this a memory efficient operation.
     """
-    @staticmethod
-    def band_attn(result):
-        """ Performs attention """
-
-        query, key, value = result.value()
-        query = query.value() #(...,item,  diag_index, d_query)
-        key = key.value() #(..., item,    ,, d_query)
-        value = value.value() #(..., item, diag_index, d_content)
-
-
-        score = torch.mul(query, key).sum(dim=-1)
-        score = torch.softmax(score, dim=-1)
-
-        outcome = score.matmul(value)
-        return outcome
 
     def __init__(self,
                  d_model: int,
@@ -229,9 +214,9 @@ class BandedMultiheadedAttention(nn.Module):
         key = key.transpose(-1, -2)
         value = value.transpose(-1, -2)
 
-        local_queries = Glimpses.dilocal(query, query_kernel, query_step, self.dilation_rates) #(batch, d_model, head, item, query_local)
-        local_keys = Glimpses.dilocal(key, content_kernel, content_step, self.dilation_rates)#(batch, d_model, head, item, local)
-        local_values = Glimpses.dilocal(value, content_kernel, content_step, self.dilation_rates) #(batch, d_model, head, item, local)
+        local_queries = Glimpses.dilocal(query, query_kernel, query_step, self.dilation) #(batch, d_model, head, same_item, query_local)
+        local_keys = Glimpses.dilocal(key, content_kernel, content_step, self.dilation)#(batch, d_model, head, same_item, local)
+        local_values = Glimpses.dilocal(value, content_kernel, content_step, self.dilation) #(batch, d_model, head, same_item, local)
 
         #Perform the heading interprojections, respectinve the existing heads
 

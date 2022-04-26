@@ -103,7 +103,7 @@ class testBandedAttn(unittest.TestCase):
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(20, 20, 3, 4)
+        tester = Learnables.BandedMultiheadedAttention(20, 3, 3)
         tester(query, key, value)
 
 if __name__ == "__main__":
