@@ -157,38 +157,38 @@ def local(tensor: torch.Tensor,
     final_stride: List[int] = final_stride.tolist()
     return tensor[..., start_offset:-end_offset].as_strided(final_shape, final_stride)
 
-@torch.jit.script
 def dilocal(tensor: torch.Tensor,
-               kernel_width: int,
-               stride_rate: int,
-               dilations: Union[List[int], torch.Tensor],
-               pad_to_input: bool = True,
-               pad_value: float = 0.0) -> torch.Tensor:
+           kernel_width: int,
+           stride_rate: int,
+           dilations: torch.Tensor,
+           pad_to_input: bool = True,
+           pad_value: float = 0.0) -> torch.Tensor:
     """
 
-    Performs the local operation in parallel with a variety of different dilations. Entries
-    are padded with zero if there would not be a reference in the original tensor, such as
-    edge dilations.
+    Performs the local operation in parallel with different dilation values over a particular head space.
 
-    :param tensor: The input to localize
+
+    :param tensor: The input to localize. Last dim will be extracted.
     :param kernel_width: The kernel to use
     :param stride_rate: The stride rate to use
-    :param dilations: A list of the dilations. Each one will end up on a head dimension
-    :param pad_to_input_size: Whether or not to ensure the output is as wide as the input.
+    :param dilations: A tensor indicating dilations to perform across appropriate dimensions. Dilation dimensions must
+        come in the same order as head dimensions, if so defined. Any excess will then become extra dimensions.
+    :param pad_to_input: Whether or not to ensure the output is as wide as the input.
+    +++
     :return: tensor. Has shape (dilations, items, kernel_width).
     """
+
+    #Run sanity checks
     assert isinstance(kernel_width, int)
     assert isinstance(stride_rate, int)
+
+    assert kernel_width > 0
+    assert stride_rate > 0
     assert kernel_width % 2 == 1, "Kernel must be odd for clean mapping"
 
-    if not isinstance(dilations, torch.Tensor):
-        torch.jit.annotate(List[int], dilations)
-        dilations = torch.tensor(dilations, dtype=torch.int64)
-    dilations = torch.tensor(dilations, dtype=torch.int64)
-    torch.jit.annotate(torch.Tensor, dilations)
+
 
     #Calculate the offsets and paddings required to create the padbuffer.
-
     principle_padding = (kernel_width-1)*(dilations.max() - 1)
     if pad_to_input:
         total_padding = principle_padding + kernel_width-1
@@ -201,17 +201,42 @@ def dilocal(tensor: torch.Tensor,
     start_offsets = (particular_total_offsets/2).type(torch.int64)
     end_offsets = (particular_total_offsets/2).type(torch.int64)
 
-    #Create the buffer, then create and stack the views.
+    #Rearange so that the buffer entries come first
 
     buffer = F.pad(tensor, pad_op, value=pad_value)
-    local_views = []
-    for dilation, start_offset, end_offset in zip(dilations, start_offsets, end_offsets):
-        view_item = local(buffer, kernel_width, stride_rate, dilation, start_offset, end_offset)
-        local_views.append(view_item)
-    output = torch.stack(local_views, dim=-3)
-    return output
+    permuter = torch.arange(buffer.dim())
+    permuter = torch.concat(permuter[dilations.dim():], permuter[dilations.dim():])
+    buffer = torch.permute(buffer, permuter)
+
+    #Execute headed dilation
+    def recurse(heads_left, buffer, start_offsets, end_offsets, dilations):
+        if dilations.dim() == 0:
+            return local(buffer, kernel_width, stride_rate, dilations, start_offsets, end_offsets)
+
+        iterator = zip(buffer,dilations, start_offsets, end_offsets)
+
+        for subbuffer, subdilator, substart_offset, subendoffset in iterator:
+
+           recurse(heads_left-1, subbuffer, substart_offset, subendoffset, subdilator)
 
 
+
+
+    def recurse(offset, heads_left, dilations, buffer):
+        if dilations.dim() == 0:
+            #Terminal case
+
+
+        sub_dilations = dilations.unbind(0)
+
+        if heads_left > 0:
+            subbuffer = buffer.unbind(offset)
+            subdilations = dilations.unbind(0)
+            heads_left -= 1
+        else:
+            subbuffer = buffer
+            subdilations = dilations.unbind(0)
+        output = map(local, )
 
 
 
