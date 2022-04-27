@@ -1,5 +1,5 @@
 # perform imports
-from typing import Union, Sequence, Optional, Callable, List, Tuple
+from typing import Union, Sequence, Optional, Callable, List
 
 import numpy as np
 import torch
@@ -130,22 +130,21 @@ class BandedMultiheadedAttention(nn.Module):
                  kernel_width: int,
                  heads: int = 5,
                  dilation_rates: Optional[List[int]] = None,
-                 compression_ratio: Optional[Tuple[int, int]] = None,
+                 offsets: Optional[List[int]] = None,
                  ):
         """
 
         :param d_model: The width of the embeddings
-        :param kernel_width: How wide to make the base kernel
+        :param kernel_width: How wide to make the key-value extraction kernel
         :param heads: How many different heads to make
         :param dilation_rates: The dilation rate per head. MUST match head length if defined
-        :param The expected ratio of items in query to items in key, value. Must be given as
-            Tuple[query, content] if defined. Is set at (1, 1) if not defined.
+        :param offsets: The offsets per head. MUST match head length if defined
         """
 
         #Start torch
         super().__init__()
 
-        #Perform a little verification and set defaults
+        #assert
 
         assert isinstance(d_model, int)
         assert isinstance(kernel_width, int)
@@ -157,43 +156,28 @@ class BandedMultiheadedAttention(nn.Module):
 
         if dilation_rates is None:
             dilation_rates = [1]*heads
-        if compression_ratio is None:
-            compression_ratio = (1, 1)
-
-
-        #Simplify the ratio down to it's smallest terms
-
-        query_kernel_multiplier, content_kernel_multiplier = compression_ratio
-
-        assert query_kernel_multiplier >= 1
-        assert content_kernel_multiplier >= 1
-
-
-        gcd = math.gcd(query_kernel_multiplier, content_kernel_multiplier)
-        query_kernel_multiplier /= gcd
-        content_kernel_multiplier /= gcd
-
-        #handle dilation
+        if offsets is None:
+            offsets = [0]*heads
 
         assert len(dilation_rates) == heads
+        assert len(offsets) == heads
+
         dilation_rates = torch.Tensor(dilation_rates)
+        offsets = torch.Tensor(offsets)
 
         #Store persistant useful constants
 
         self.heads = heads
-        self.query_kernel = query_kernel_multiplier*kernel_width
-        self.content_kernel = content_kernel_multiplier*kernel_width
-        self.base_kernel = kernel_width
+        self.kernel = kernel_width
         self.dilation = dilation_rates
+        self.offset = offsets
 
         # Create projection layers.
 
         self._Query = Linear(d_model, d_model//heads, heads)
         self._Key = Linear(d_model, d_model//heads, heads)
         self._Value = Linear(d_model, d_model//heads, heads)
-        self._Pos = Linear([self.content_kernel, d_model//heads], [self.content_kernel, d_model//heads], heads)
         self._Collapse = Linear([heads, d_model//heads], d_model)
-
 
 
     def forward(self, query, key, value):

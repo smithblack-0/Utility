@@ -136,9 +136,8 @@ class testDilocal(unittest.TestCase):
     def test_basic(self):
         """ Tests whether an uncomplicated, unchanging case works. This means stride, kernel is 1"""
         tensor = torch.Tensor([[1, 2, 3, 4], [5, 6, 7, 8]])
-        dilation = torch.Tensor([1, 2])
-        outcome = Glimpses.dilocal(tensor, 1, 1, dilation)
-        self.assertTrue(np.array_equal(outcome.shape, torch.Tensor([2, 2, 4, 1])))
+        outcome = Glimpses.dilocal(tensor, 1, 1, [1, 2])
+        self.assertTrue(np.array_equal(outcome.shape, [2, 2, 4, 1]))
     def testDilation(self):
         """
         Test if a combination of dilated kernels works.
@@ -148,7 +147,7 @@ class testDilocal(unittest.TestCase):
         tensor = torch.tensor([0, 1, 2, 3, 4, 5])
         stride = 1
         kernel=3
-        dilation = torch.Tensor([1, 2, 3])
+        dilation = [1, 2, 3]
 
         #State expected result
         final = []
@@ -160,12 +159,3 @@ class testDilocal(unittest.TestCase):
         #Perform test
         test = Glimpses.dilocal(tensor, kernel, stride, dilation)
         self.assertTrue(np.array_equal(test, final))
-    def test_Prebuilt(self):
-        tensor = torch.randn([3, 4, 7])
-        stride = 1
-        kernel = 3
-        dilation = torch.Tensor([1, 2, 3, 4])
-
-        test = Glimpses.dilocal(tensor, kernel, stride, dilation, pad_to_input=False)
-        self.assertTrue(tensor[0,0,0] == test[0, 0, 0, 0, 0])
-
