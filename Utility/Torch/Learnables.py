@@ -1,5 +1,5 @@
 # perform imports
-from typing import Union, Sequence, Optional, Callable, List
+from typing import Union, Sequence, Optional, Callable, List, Tuple
 
 import numpy as np
 import torch
@@ -130,7 +130,7 @@ class BandedMultiheadedAttention(nn.Module):
                  kernel_width: int,
                  heads: int = 5,
                  dilation_rates: Optional[List[int]] = None,
-                 offsets: Optional[List[int]] = None,
+                 compression_ratio: Optional[Tuple[int, int]] = None,
                  ):
         """
 
@@ -149,6 +149,10 @@ class BandedMultiheadedAttention(nn.Module):
         assert isinstance(d_model, int)
         assert isinstance(kernel_width, int)
         assert isinstance(heads, int)
+        assert isinstance(compression_ratio, tuple)
+        assert len(compression_ratio) == 2
+        assert isinstance(compression_ratio[0], int)
+        assert isinstance(compression_ratio[1], int)
 
         assert d_model >= 1
         assert kernel_width >= 1
@@ -156,79 +160,65 @@ class BandedMultiheadedAttention(nn.Module):
 
         if dilation_rates is None:
             dilation_rates = [1]*heads
-        if offsets is None:
-            offsets = [0]*heads
 
         assert len(dilation_rates) == heads
-        assert len(offsets) == heads
 
         dilation_rates = torch.Tensor(dilation_rates)
-        offsets = torch.Tensor(offsets)
+
+
+
 
         #Store persistant useful constants
 
         self.heads = heads
-        self.kernel = kernel_width
+        self.query_compression = compression_ratio[0]
+        self.content_compression = compression_ratio[1]
+
+        self.query_kernel = compression_ratio[0]
+        self.query_stride = compression_ratio[0]
+
+        self.content_kernel = kernel_width*compression_ratio[1]
+        self.content_stride = compression_ratio[1]
+
         self.dilation = dilation_rates
         self.offset = offsets
 
         # Create projection layers.
 
-        self._Query = Linear(d_model, d_model//heads, heads)
-        self._Key = Linear(d_model, d_model//heads, heads)
-        self._Value = Linear(d_model, d_model//heads, heads)
+        d_kernel = d_model//heads
+
+        self._Query = Linear([self.query_kernel, d_model], [self._query_kernel,d_kernel], heads)
+        self._Key = Linear([self.content_kernel, d_model], [self._content_kernel, d_kernel], heads)
+        self._Value = Linear([self._content_kernel, d_model], [self._content_kernel, d_kernel], heads)
         self._Collapse = Linear([heads, d_model//heads], d_model)
 
 
     def forward(self, query, key, value):
 
-        #Handle the cases where the query and content do not have the same item length, by
-        #resizing stride and kernels as appropriate.
-        query_length = query.shape[-2]
-        content_length = key.shape[-2]
-        kernel = self.kernel
-        if query_length // content_length > 1:
-            # Content fits into query more than once. Adjust step
+        assert key.shape[-2] = value.shape[-2]
+        assert query.shape[-2]*self.query_compression == key.shape[-2]*self.content_compression
 
-            query_step = query_length // content_length
-            content_step = 1
-        elif content_length // query_length > 1:
-            #Query fits into content more than once. Adjust step
-
-            query_step = 1
-            content_step = content_length // query_length
-        else:
-            query_step = 1
-            content_step = 1
-
-        query_kernel = query_step
-        content_kernel = content_step * kernel
-
-        if query_length > content_length:
-            query_kernel = query_kernel + query_length % content_length
-        if content_length > query_length:
-            content_kernel = content_kernel + content_length % query_length
 
         #Localize all entries, and create the dilation heads.
         query = query.transpose(-1, -2) #(batch, d_model, items)
         key = key.transpose(-1, -2)
         value = value.transpose(-1, -2)
 
-        local_queries = Glimpses.dilocal(query, query_kernel, query_step, self.dilation) #(batch, d_model, head, same_item, query_local)
-        local_keys = Glimpses.dilocal(key, content_kernel, content_step, self.dilation)#(batch, d_model, head, same_item, local)
-        local_values = Glimpses.dilocal(value, content_kernel, content_step, self.dilation) #(batch, d_model, head, same_item, local)
+        local_queries = Glimpses.dilocal(query, self.query_kernel, self.query_stride, self.dilation) #(batch, d_model, head, same_item, query_local)
+        local_keys = Glimpses.dilocal(key, self.content_kernel, self.content_stride, self.dilation)#(batch, d_model, head, same_item, local)
+        local_values = Glimpses.dilocal(value, self.content_kernel, self.content_stride, self.dilation) #(batch, d_model, head, same_item, local)
 
         #Perform the heading interprojections, respectinve the existing heads
 
-        local_queries = local_queries.transpose(-3, -2).transpose(-4, -1) #(batch, query_local, item, head, d_model)
-        local_keys = local_keys.transpose(-3, -2).transpose(-4, 1) #(batch, local, item, head, d_model)
-        local_values = local_values.transpose(-3, -2).transpose(-4, -1)
+        local_queries = local_queries.transpose(-4, -2).tranpose(-1, -2) #(batch, item, head, local, d_model)
+        local_keys = local_keys.transpose(-4, -2).transpose(-1, -2) #(batch, item, head, local, d_model)
+        local_values = local_values.transpose(-4, -2).transpose(-1, -2) #(batch, item, head, local, d_model)
 
-        local_queries = self._Query(local_queries) #(batch, query_local, item, head, d_small)
-        local_keys = self._Key(local_keys)
-        local_values = self._Value(local_values)
+        local_queries = self._Query(local_queries) #(batch, item, head, query_local, d_small)
+        local_keys = self._Key(local_keys) #(batch, item, head, content_local, d_small)
+        local_values = self._Value(local_values) #(batch, item, head, content_local, d_small)
 
-        #Perform attention on the local axis
+        #Perform attention on the local axis, and inject positional score information per head.
 
         local_queries = local_queries.transpose(-4, -2) #(batch, head, item, query_local, d_small)
         local_keys = local_keys.transpose(-4, -2) #(batch, head, item, local, d_small)
@@ -240,7 +230,7 @@ class BandedMultiheadedAttention(nn.Module):
 
         #Delocalize, combine, and return
 
-        attention = attention.transpose(-1, -2).flatten(dim=-1) #(batch, head, item, d_small)
+        attention = attention.transpose(-1, -2).flatten(-3, -2) #(batch, head, item, d_small)
         attention = attention.transpose(-2, -1) #(batch, item, head, d_small)
         final_result = self._Collapse(attention) #(batch, item, d_model)
         return final_result
