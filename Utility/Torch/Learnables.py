@@ -41,6 +41,7 @@ class Linear(nn.Module):
 
     """
 
+
     def __init__(self,
                  input_shape: Union[torch.Tensor, List[int], int],
                  output_shape: Union[torch.Tensor, List[int], int],
@@ -127,13 +128,28 @@ class BandedMultiheadedAttention(nn.Module):
     This layer performs banded attention in a memory efficient manner in
     pytorch
 
-    Banded attention performs attention within, suprise suprise, an exclusive, windowed band.
-    views are used to keep this a memory efficient operation.
+    Banded matrix multiplication only evaluates values within a particular band
+    of the braader matrix multiplication kernel. This has the advantage of significantly
+    reducing the computation required on long sequences. Dilation, additionally, allowed
+    the addressing of remote values using the same infrastructure. Both of these were
+    used together to develop the LongFormer model for processing lang lengths of test.
+
+    This is an implimentation of this variety of Attention. It included an additional feature as well.
+    Relative Positional information is injected into the problem at the scoring level, and each dilation score can have a
+    number of additional samples, called supersamples, extracted from them.
+
     """
 
+    def minimum_query_length(self):
+        return self.query_kernel
+    def minimum_value_length(self):
+        return self.content_kernel
+    def minimum_key_length(self):
+        return self.content_kernel
     def __init__(self,
                  d_model: int,
                  kernel_width: int,
+                 d_internal: Optional[int] = None,
                  supersampling: Optional[List[int]] = None,
                  dilation_rates: Optional[List[int]] = None,
                  compression_ratio: Optional[Tuple[int, int]] = None,
@@ -159,6 +175,8 @@ class BandedMultiheadedAttention(nn.Module):
             dilation_rates = [1, 1, 2, 4, 8]
         if compression_ratio is None:
             compression_ratio = (1, 1)
+        if d_internal is None:
+            d_internal = 64
 
         #Perform a little verification
 
@@ -201,19 +219,19 @@ class BandedMultiheadedAttention(nn.Module):
 
         supersampling = torch.tensor(supersampling, dtype=torch.int64)
         dilation_rates = torch.tensor(dilation_rates, dtype=torch.int64)
+
         #Create projection parameters, and projectors
 
         assert isinstance(d_model, int)
+        assert d_model > 0
 
         subheads = dilation_rates.shape[0]
         heads = supersampling.sum()
-        d_headed = torch.floor_divide(d_model, subheads).type(torch.int64)
-        assert d_headed >= 1
 
-        Query_Projector = Linear(d_model, d_headed, subheads)
-        Key_Projector = Linear(d_model, d_headed, subheads)
-        Value_Projector = Linear(d_model, d_headed, heads)
-        Collapse_Projector = Linear([heads, d_headed], d_model)
+        Query_Projector = Linear(d_model, d_internal, subheads)
+        Key_Projector = Linear(d_model, d_internal, subheads)
+        Value_Projector = Linear(d_model, d_internal, heads)
+        Collapse_Projector = Linear([heads, d_internal], d_model)
         Pos_Sampling = Linear([query_kernel, content_kernel], [query_kernel, content_kernel], heads)
 
 
@@ -225,7 +243,8 @@ class BandedMultiheadedAttention(nn.Module):
         self.heads = heads
         self.subheads = subheads
         self.d_model = d_model
-        self.d_headed = d_headed
+        self.d_internal = d_internal
+        self.compression = compression_ratio
 
         self.base_kernel = kernel_width
 
@@ -241,8 +260,7 @@ class BandedMultiheadedAttention(nn.Module):
         self._Sampler = Pos_Sampling
         self._Collapse = Collapse_Projector
 
-
-    def forward(self, query, key, value):
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
         """
 
 
@@ -259,6 +277,16 @@ class BandedMultiheadedAttention(nn.Module):
         assert query.shape[-1] == key.shape[-1]
         assert query.shape[-1] == value.shape[-1]
         assert query.shape[-1] == self.d_model
+
+        assert key.shape[-2] == value.shape[-2]
+
+        if query.shape[-2] < self.query_kernel:
+            raise ValueError("Item dimension of query is smaller then query kernel")
+        if value.shape[-2] < self.content_kernel:
+            raise ValueError("Item dimension of value is smaller then content kernel")
+
+        if query.shape[-2]*self.compression[1] != value.shape[-2]*self.compression[0]:
+            raise ValueError("Query and content were not provided in the correct ratio")
 
         #Localize all entries, and create the dilation heads.
         query = query.transpose(-1, -2) #(..., d_model, items)
@@ -280,15 +308,15 @@ class BandedMultiheadedAttention(nn.Module):
         local_keys = self._Key(local_keys)
         local_values = self._Value(local_values)
 
-        #Perform attention on the local axis
+        #Perform attention on the local axis.
 
         local_queries = local_queries.transpose(-4, -2).transpose(-4, -3) #(batch, item, head, query_local, d_small)
         local_keys = local_keys.transpose(-4, -2).transpose(-4, -3) #(batch, item,  head, local, d_small)
         local_values = local_values.transpose(-4, -2).transpose(-4, -3)
 
         score = torch.matmul(local_queries, local_keys.transpose(-1, -2)) #(batch, item, head, query_local, local)
-        score = torch.repeat_interleave(score, self.sampling, dim=-3)
-        score = self._Sampler(score)
+        score = torch.repeat_interleave(score, self.sampling, dim=-3) #Expand for supersampling
+        score = self._Sampler(score) #Perform supersampling. Knowledge of relative order injected.
         score = torch.softmax(score, dim=-1)
 
         attention = torch.matmul(score, local_values) #(batch, item, head, query_local, d_small)
