@@ -107,7 +107,7 @@ class Linear(nn.Module):
 
         # Flatten the relevent dimensions
 
-        tensor = Glimpses.view(tensor, self._input_shape, int(self._input_shape.prod()))
+        tensor = Glimpses.reshape(tensor, self._input_shape, int(self._input_shape.prod()))
 
         # Perform primary processing. Add an extra dimension on the end
         # of the input tensor to handle the matrix multiply, perform
@@ -119,7 +119,7 @@ class Linear(nn.Module):
         tensor = tensor + self._bias
 
         # Restore the dimensions, then return
-        tensor = Glimpses.view(tensor, int(self._output_shape.prod()), self._output_shape)
+        tensor = Glimpses.reshape(tensor, int(self._output_shape.prod()), self._output_shape)
         return tensor
 
 
@@ -149,6 +149,7 @@ class BandedMultiheadedAttention(nn.Module):
     def __init__(self,
                  d_model: int,
                  kernel_width: int,
+                 RAM_width: Optional[int] = None,
                  d_internal: Optional[int] = None,
                  supersampling: Optional[List[int]] = None,
                  dilation_rates: Optional[List[int]] = None,
@@ -175,12 +176,9 @@ class BandedMultiheadedAttention(nn.Module):
             dilation_rates = [1, 1, 2, 4, 8]
         if compression_ratio is None:
             compression_ratio = (1, 1)
-        if d_internal is None:
-            d_internal = 64
 
         #Perform a little verification
 
-        assert isinstance(d_model, int)
         #Simplify the ratio down to it's smallest terms, and setup the kernel sizes
 
         assert isinstance(kernel_width, int)
@@ -225,8 +223,11 @@ class BandedMultiheadedAttention(nn.Module):
         assert isinstance(d_model, int)
         assert d_model > 0
 
+
         subheads = dilation_rates.shape[0]
         heads = supersampling.sum()
+        if d_internal is None:
+            d_internal = d_model//subheads
 
         Query_Projector = Linear(d_model, d_internal, subheads)
         Key_Projector = Linear(d_model, d_internal, subheads)
@@ -260,7 +261,10 @@ class BandedMultiheadedAttention(nn.Module):
         self._Sampler = Pos_Sampling
         self._Collapse = Collapse_Projector
 
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor):
+    def forward(self,
+                query: torch.Tensor,
+                key: torch.Tensor,
+                value: torch.Tensor):
         """
 
 
@@ -286,7 +290,7 @@ class BandedMultiheadedAttention(nn.Module):
             raise ValueError("Item dimension of value is smaller then content kernel")
 
         if query.shape[-2]*self.compression[1] != value.shape[-2]*self.compression[0]:
-            raise ValueError("Query and content were not provided in the correct ratio")
+            raise ValueError("Query and content lengths were not provided in the correct ratio")
 
         #Localize all entries, and create the dilation heads.
         query = query.transpose(-1, -2) #(..., d_model, items)
