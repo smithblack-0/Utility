@@ -75,7 +75,6 @@ class Linear(nn.Module):
         # Create kernel and bias. These include head dimensions if provided.
 
         if head_shapes is not None:
-
             kernel_shape = [*head_shapes, output_shape.prod(),input_shape.prod()]
             bias_shape = [*head_shapes, output_shape.prod()]
         else:
@@ -144,6 +143,11 @@ class BandedMultiheadedAttention(nn.Module):
         #Start torch
         super().__init__()
 
+        if compression_ratio is None:
+            compression_ratio = (1, 1)
+        if dilation_rates is None:
+            dilation_rates = [1]*heads
+
         #assert
 
         assert isinstance(d_model, int)
@@ -158,8 +162,7 @@ class BandedMultiheadedAttention(nn.Module):
         assert kernel_width >= 1
         assert heads >= 1
 
-        if dilation_rates is None:
-            dilation_rates = [1]*heads
+
 
         assert len(dilation_rates) == heads
 
@@ -181,7 +184,6 @@ class BandedMultiheadedAttention(nn.Module):
         self.content_stride = compression_ratio[1]
 
         self.dilation = dilation_rates
-        self.offset = offsets
 
         # Create projection layers.
 
@@ -191,14 +193,14 @@ class BandedMultiheadedAttention(nn.Module):
         self._Key = Linear(d_model, d_kernel, heads)
         self._Value = Linear(d_model, d_kernel, heads)
 
-        self._KeyPos = Linear(self.content_kernel, self.content_kernel)
-        self._ValPos = Linear(self.content_kernel, self.content_kernel, d_kernel], heads)
+        self._KeyPos = Linear(self.content_kernel, self.content_kernel, heads)
+        self._ValPos = Linear(self.content_kernel, self.content_kernel, heads)
         self._Collapse = Linear([heads, d_model//heads], d_model)
 
 
     def forward(self, query, key, value):
 
-        assert key.shape[-2] = value.shape[-2]
+        assert key.shape[-2] == value.shape[-2]
         assert query.shape[-2]*self.query_compression == key.shape[-2]*self.content_compression
 
 
