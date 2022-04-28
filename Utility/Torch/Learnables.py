@@ -187,9 +187,12 @@ class BandedMultiheadedAttention(nn.Module):
 
         d_kernel = d_model//heads
 
-        self._Query = Linear([self.query_kernel, d_model], [self._query_kernel,d_kernel], heads)
-        self._Key = Linear([self.content_kernel, d_model], [self._content_kernel, d_kernel], heads)
-        self._Value = Linear([self._content_kernel, d_model], [self._content_kernel, d_kernel], heads)
+        self._Query = Linear(d_model, d_kernel, heads)
+        self._Key = Linear(d_model, d_kernel, heads)
+        self._Value = Linear(d_model, d_kernel, heads)
+
+        self._KeyPos = Linear(self.content_kernel, self.content_kernel)
+        self._ValPos = Linear(self.content_kernel, self.content_kernel, d_kernel], heads)
         self._Collapse = Linear([heads, d_model//heads], d_model)
 
 
@@ -210,13 +213,24 @@ class BandedMultiheadedAttention(nn.Module):
 
         #Perform the heading interprojections, respectinve the existing heads
 
-        local_queries = local_queries.transpose(-4, -2).tranpose(-1, -2) #(batch, item, head, local, d_model)
-        local_keys = local_keys.transpose(-4, -2).transpose(-1, -2) #(batch, item, head, local, d_model)
-        local_values = local_values.transpose(-4, -2).transpose(-1, -2) #(batch, item, head, local, d_model)
+        local_queries = local_queries.transpose(-3, -2).transpose(-4, -1) #(batch, query_local, item, head, d_model)
+        local_keys = local_keys.transpose(-3, -2).transpose(-4, 1) #(batch, local, item, head, d_model)
+        local_values = local_values.transpose(-3, -2).transpose(-4, -1)
 
-        local_queries = self._Query(local_queries) #(batch, item, head, query_local, d_small)
-        local_keys = self._Key(local_keys) #(batch, item, head, content_local, d_small)
-        local_values = self._Value(local_values) #(batch, item, head, content_local, d_small)
+        local_queries = self._Query(local_queries) #(batch, query_local, item, head, d_small)
+        local_keys = self._Key(local_keys)
+        local_values = self._Value(local_values)
+
+        #recognize local positional information
+
+        local_keys = local_keys.transpose(-4, -1) #(batch, d_small, item, head, content_local)
+        local_values = local_values.transpose(-4, -1) #(batch, d_small, item, head, content_local)
+
+        local_keys = self._KeyPos(local_keys)
+        local_values = self._ValuePos(local_values)
+
+        local_keys = local_keys.transpose(-4, -1) #(batch, content_local, item, head, d_small)
+        local_values = local_values.transpose(-4, -1)
 
         #Perform attention on the local axis, and inject positional score information per head.
 
