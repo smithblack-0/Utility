@@ -99,11 +99,11 @@ class testLinear(unittest.TestCase):
 
 class testBandedAttn(unittest.TestCase):
     def testBasic(self):
-        query = torch.randn([3, 10, 20])
+        query = torch.arange(96).view(1, 4, 24).type(torch.float32)
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(20, 3, 3)
+        tester = Learnables.BandedMultiheadedAttention(24, 3)
         tester(query, key, value)
 
 if __name__ == "__main__":
