@@ -9,10 +9,10 @@ class testView(unittest.TestCase):
     def testBasic(self):
         """ Tests whether view works """
         test_tensor = torch.randn([20, 30, 10])
-        Glimpses.view(test_tensor, 10, [5,2])
-        Glimpses.view(test_tensor, [30, 10], [50, 6])
-        Glimpses.view(test_tensor, torch.tensor([30, 10]),torch.tensor([50, 6]))
-        Glimpses.view(test_tensor, torch.tensor([30, 10]), torch.tensor([50, 6], dtype=torch.int32))
+        Glimpses.reshape(test_tensor, 10, [5, 2])
+        Glimpses.reshape(test_tensor, [30, 10], [50, 6])
+        Glimpses.reshape(test_tensor, torch.tensor([30, 10]), torch.tensor([50, 6]))
+        Glimpses.reshape(test_tensor, torch.tensor([30, 10]), torch.tensor([50, 6], dtype=torch.int32))
 
 
 class testLocal(unittest.TestCase):

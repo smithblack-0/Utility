@@ -78,10 +78,10 @@ class testLinear(unittest.TestCase):
         
         #Develop test layer
         test_grad = Learnables.Linear([20, 10], 1)
-        
+
         #Develop optim
         test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)
-        
+
         #perform test
         test_result = test_grad(test_tensor)
         test_result.backward()
@@ -99,12 +99,53 @@ class testLinear(unittest.TestCase):
 
 class testBandedAttn(unittest.TestCase):
     def testBasic(self):
-        query = torch.randn([3, 10, 20])
+        """ Test whether the defaults are working """
+        query = torch.arange(96).view(1, 4, 24).type(torch.float32)
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(20, 3, 3)
+        tester = Learnables.BandedMultiheadedAttention(24, 3)
         tester(query, key, value)
+    def testCompressive(self):
+        """ Test whether or not compression and expansion abilities are functioning"""
+        query = torch.randn([2,3,80,80])
+        key1 = torch.randn([2, 3, 40, 80])
+        key2 = torch.randn([2, 3, 160, 80])
+        value1 = key1.detach()
+        value2 = key2.detach()
+
+        tester_decompress = Learnables.BandedMultiheadedAttention(80, 20, compression_ratio=(1, 2))
+        tester_compress = Learnables.BandedMultiheadedAttention(80, 20, compression_ratio=(2, 1))
+
+        test_decompress = tester_decompress(query, key2, value2)
+        test_compress = tester_compress(query, key1, value1)
+    def testGradients(self):
+        """ Tests that gradients are updating when a layer is run """
+        query = torch.arange(96).view(1, 4, 24).type(torch.float32)
+        key = query.clone()
+        value = query.clone()
+
+        tester = Learnables.BandedMultiheadedAttention(24, 3)
+        test_optim = torch.optim.Adam(tester.parameters())
+        params = [item.clone().detach() for item in tester.parameters()]
+
+        for _ in range(10):
+            test_optim.zero_grad()
+            test_result = tester(query, key, value)
+            loss = test_result.sum()**2
+
+            loss.backward()
+            test_optim.step()
+
+
+
+        for initial, final in zip(params, tester.parameters()):
+            test = torch.not_equal(initial, final)
+            test = torch.any(test)
+            self.assertTrue(test, "Parameters not updating")
+    def test_jit(self):
+        """Tests whether or not the layer can be jit compiled. """
+
 
 if __name__ == "__main__":
     unittest.main()
