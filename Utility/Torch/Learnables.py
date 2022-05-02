@@ -426,6 +426,23 @@ class BandedMultiheadedAttention(nn.Module):
             final_result = final_result[..., :query.shape[-2], :]
         return final_result
 
+class FeedForward(nn.Module):
+    """
+    The transformer feedforward layer.
+
+    Nothing much to see here.
+    """
+
+    def __init__(self, d_model, dim_feedforward=2048):
+        super().__init__()
+        self._ff1 = Linear(d_model, dim_feedforward)
+        self._ff2 = Linear(dim_feedforward, d_model)
+        self._activation = torch.relu
+    def forward(self, tensor):
+        tensor = self._ff1(tensor)
+        tensor = self._activation(tensor)
+        tensor = self._ff2(tensor)
+        return tensor
 
 class Feedforward(nn.Module):
     """
