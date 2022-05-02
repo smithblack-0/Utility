@@ -181,13 +181,15 @@ class CompositeComponentConverter(nn.Module):
     def component(self, tensor: torch.Tensor) -> List[torch.Tensor]:
         """
 
-        breaks a composite tensor apart into component format.
+        This breaks a composite tensor apart into component format.
         In component format, each component has been reduced in length
         by the appropriate ratio, and unpeeled according to the appropriate
         dimension.
 
         The input requirements are that the number of embeddings is of length
         lcm, and that the embedding width is equal to d_total.
+        
+        The length of each component will be reduced according to the specifications of ratio.
 
         :param tensor: The tensor to break into components
         :return: A list of components.
