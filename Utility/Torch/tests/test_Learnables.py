@@ -1,7 +1,11 @@
+import asyncio
 import unittest
 import torch
 
+from torch import nn
 from Utility.Torch import Learnables
+
+
 
 class testLinear(unittest.TestCase):
     """
@@ -158,7 +162,6 @@ class testBandedAttn(unittest.TestCase):
         resultb = tester2(query, key, value)
         self.assertTrue(torch.equal(resulta, resultb))
 
-
     def test_jit(self):
         """Tests whether or not the layer can be jit compiled. """
         query = torch.arange(96).view(1, 4, 24).type(torch.float32)
@@ -168,6 +171,7 @@ class testBandedAttn(unittest.TestCase):
         tester = Learnables.BandedMultiheadedAttention(24, 3)
         tester = torch.jit.script(tester)
         tester(query, key, value)
+
 
 
 if __name__ == "__main__":
