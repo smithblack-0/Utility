@@ -24,6 +24,8 @@ class CompositeComponentConverter(nn.Module):
     This class is designed to allow the augmentation of the local/banded transformer architecture
     to allow it to perform meaningful and efficient data interchange between both highly local and
     highly global contexts.
+    
+    It is designed specifically to work well with banded transformers, and thus to analyze large documents.
 
     -- fields --
 
@@ -148,7 +150,7 @@ class CompositeComponentConverter(nn.Module):
         this is designed to take a sequence of tensors in superlocal
         component format and place it into composite format. This then
         means that a single value may appear in many places in nearby
-        embedding items.
+        embedding items. 
 
         :param tensors: A list of superlocal tensors. Must have words in the
         appropriate ratios, and the appropriate dimensions
