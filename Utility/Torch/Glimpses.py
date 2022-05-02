@@ -150,7 +150,6 @@ def reshape(tensor,
     output: torch.Tensor = tensor.reshape(final_shape)
     return output
 
-@torch.jit.script
 def local(tensor: torch.Tensor,
           kernel_width: int,
           stride_rate: int,

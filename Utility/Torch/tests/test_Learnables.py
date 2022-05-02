@@ -1,7 +1,11 @@
+import asyncio
 import unittest
 import torch
 
+from torch import nn
 from Utility.Torch import Learnables
+
+
 
 class testLinear(unittest.TestCase):
     """
@@ -137,14 +141,37 @@ class testBandedAttn(unittest.TestCase):
             loss.backward()
             test_optim.step()
 
-
-
         for initial, final in zip(params, tester.parameters()):
             test = torch.not_equal(initial, final)
             test = torch.any(test)
             self.assertTrue(test, "Parameters not updating")
+    def test_Saveable(self):
+        """ Tests whether or not saving, then loading, works properly"""
+
+        query = torch.arange(96).view(1, 4, 24).type(torch.float32)
+        key = query.clone()
+        value = query.clone()
+
+        tester = Learnables.BandedMultiheadedAttention(24, 3)
+        tester2 = Learnables.BandedMultiheadedAttention(24, 3)
+
+        state_dict = tester.state_dict()
+        tester2.load_state_dict(state_dict)
+
+        resulta = tester(query, key, value)
+        resultb = tester2(query, key, value)
+        self.assertTrue(torch.equal(resulta, resultb))
+
     def test_jit(self):
         """Tests whether or not the layer can be jit compiled. """
+        query = torch.arange(96).view(1, 4, 24).type(torch.float32)
+        key = query.clone()
+        value = query.clone()
+
+        tester = Learnables.BandedMultiheadedAttention(24, 3)
+        tester = torch.jit.script(tester)
+        tester(query, key, value)
+
 
 
 if __name__ == "__main__":

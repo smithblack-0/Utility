@@ -7,9 +7,12 @@ from torch import nn
 from torch.nn import functional as F
 
 import math
+from functools import wraps
 
 # perform library imports
 from Utility.Torch import Glimpses, Paddings
+
+
 
 
 ### Head accommodation on the linear layer ###
@@ -40,6 +43,9 @@ class Linear(nn.Module):
     assumed only a single dimension is involved.
 
     """
+
+
+
 
 
     def __init__(self,
@@ -102,7 +108,6 @@ class Linear(nn.Module):
 
         self._kernel = nn.Parameter(kernel)
         self._bias = nn.Parameter(bias)
-
     def forward(self, tensor):
 
         # Flatten the relevent dimensions
@@ -122,7 +127,6 @@ class Linear(nn.Module):
         tensor = Glimpses.reshape(tensor, int(self._output_shape.prod()), self._output_shape)
         return tensor
 
-
 class BandedMultiheadedAttention(nn.Module):
     """
     This layer performs banded attention in a memory efficient manner in
@@ -132,11 +136,53 @@ class BandedMultiheadedAttention(nn.Module):
     of the braader matrix multiplication kernel. This has the advantage of significantly
     reducing the computation required on long sequences. Dilation, additionally, allowed
     the addressing of remote values using the same infrastructure. Both of these were
-    used together to develop the LongFormer model for processing lang lengths of test.
+    used together to develop the LongFormer model for processing lang lengths of text,
+    a recent development in the field of NLP.
 
-    This is an implimentation of this variety of Attention. It included an additional feature as well.
-    Relative Positional information is injected into the problem at the scoring level, and each dilation score can have a
-    number of additional samples, called supersamples, extracted from them.
+    This is an implimentation and extension of this concept.
+
+    --- details ---
+
+    Attention is performed in distinct bands, reducing the amount of computation required to a much smaller
+    banded kernel. Within this band, the banded attention is calculated as within LongFormer, but additional steps
+    occur as well.
+
+    #Local Kerneling and dilation
+
+    A local kernel is generated to perform the attention earlier. The items in the kernel represent the
+    relative position of items around the index of interest. Multiple indices can be handled by multiple kernels.
+    In theory, each query from the input sees neighboring, proportional items from the keys and values. Additionally,
+    setting the dilations allows for increasing the distance between entries of the keys and values.
+
+    #Relative Position Supersampling
+
+    One dilation head may contain information pertaining to many different relavent local phenomenom. This is the
+    idea behind supersampling.
+
+    At the Score step of attention, after multiplying the keys with the queries, but before the softmax, the result
+    is expanded into multiple new heads, and goes through an additional linear layer, allowing the encoding of relative
+    positional information into the result. This is the idea behind so called "supersampling"
+
+    For each dilation, one can set a supersampling rate. This will increase the different positonal samples which
+    can be chosen, and some experimentation may be needed to find the best rate.
+
+    #Compression
+
+    It is possible for a normal transformer to take arguments of variable length. This recovers some of this
+    functionality.
+
+    One can set a compression ratio, in terms of first query size, then content size, as in for instance (1, 1). This
+    would represent the ratio 1:1. This is the standard setup, but it is not the only one.
+
+    Lets say you have a query of dims (..., 100, 512) and keys, values of (..., 200, 512). In this case, there
+    are two keys, values for every one query. One can then set the compression ratio to be (1: 2), and the
+    class will ensure that keys are fed in at the appropriate rate.
+
+    --- methods ---
+
+    minimum_query_length: Returns what the minimal query length is. Pad to at least this long
+    minimum_value_length: Returns what the minimal value length is. Pad to at least this long
+    minimal_key_length: Returns the the minimal key length is. Pad to at least this long.
 
     """
 
@@ -149,20 +195,23 @@ class BandedMultiheadedAttention(nn.Module):
     def __init__(self,
                  d_model: int,
                  kernel_width: int,
-                 RAM_width: Optional[int] = None,
                  d_internal: Optional[int] = None,
                  supersampling: Optional[List[int]] = None,
                  dilation_rates: Optional[List[int]] = None,
                  compression_ratio: Optional[Tuple[int, int]] = None,
+                 pad: Optional[bool] = None,
+                 trim: Optional[bool] = None
                  ):
         """
 
         :param d_model: The width of the embeddings
-        :param kernel_width: How wide to make the base kernel
+        :param kernel_width: How wide to make the base kernel. May in fact be enlarged, depending on the compression ratio
         :param dilation_rates: The dilation rate per subhead. Must match length of supersampling
-        :param supersampling: How many supersamples to take per dilation head. Must match length of supersampling
+        :param supersampling: How many supersamples to take per dilation head. Must match length of dilation_rates
         :param compression_ratio: The expected ratio of items in query to items in key, value. Must be given as
             Tuple[query, content] if defined. Is set at (1, 1) if not defined.
+        :param pad: Whether or not to pad when the input query, key, or value is not long enough
+        :param trim: Whether to trim off the extra padding if we did end up padding the input
         """
 
         #Start torch
@@ -176,8 +225,10 @@ class BandedMultiheadedAttention(nn.Module):
             dilation_rates = [1, 1, 2, 4, 8]
         if compression_ratio is None:
             compression_ratio = (1, 1)
-
-        #Perform a little verification
+        if pad is None:
+            pad = False
+        if trim is None:
+            trim = False
 
         #Simplify the ratio down to it's smallest terms, and setup the kernel sizes
 
@@ -235,8 +286,6 @@ class BandedMultiheadedAttention(nn.Module):
         Collapse_Projector = Linear([heads, d_internal], d_model)
         Pos_Sampling = Linear([query_kernel, content_kernel], [query_kernel, content_kernel], heads)
 
-
-
         #Store
 
         self.dilation = dilation_rates
@@ -255,12 +304,47 @@ class BandedMultiheadedAttention(nn.Module):
         self.query_stride = query_step
         self.content_stride = content_step
 
+        self.run_pad = pad
+        self.trim = trim
+
         self._Query = Query_Projector
         self._Key = Key_Projector
         self._Value = Value_Projector
         self._Sampler = Pos_Sampling
         self._Collapse = Collapse_Projector
+    def pad(self,
+            query: torch.Tensor,
+            key: torch.Tensor,
+            value: torch.Tensor,
+            fill: float = 0.0):
+        """
 
+        Ensures the query and content contain the appropriate values
+        to run attention on. Pads the query, key, and value to the correct lengths if not.
+        Padding is inserted at the end.
+
+        :param query: The query to pad
+        :param key: The key to pad
+        :param value: The value to pad.
+        :return: padded_query, padded_key, padded_value
+        """
+
+
+        if query.shape[-2] < self.query_kernel:
+            difference = int(self.query_kernel - query.shape[-2])
+            query = F.pad(query, [0, 0, 0, difference], value=fill)
+        if value.shape[-2] < self.content_kernel:
+            difference = int(self.content_kernel - value.shape[-2])
+            key = F.pad(key, [0, 0, 0, difference], value=fill)
+            value = F.pad(value, [0, 0, 0, difference], value=fill)
+        if query.shape[-2] % self.compression[0] != 0:
+            difference = int(self.compression[0] - query.shape[-2] % self.compression[0])
+            query = F.pad(query, [0, 0, 0, difference], value=fill)
+        if value.shape[-2] % self.compression[1] != 0:
+            difference = int(self.compression[1] - query.shape[-2] % self.compression[1])
+            key = F.pad(key, [0, 0, 0, difference], value=fill)
+            value = F.pad(value, [0, 0, 0, difference], value=fill)
+        return query, key, value
     def forward(self,
                 query: torch.Tensor,
                 key: torch.Tensor,
@@ -274,39 +358,47 @@ class BandedMultiheadedAttention(nn.Module):
         :return:
         """
 
-        assert torch.is_tensor(query)
-        assert torch.is_tensor(key)
-        assert torch.is_tensor(value)
+        assert isinstance(query, torch.Tensor)
+        assert isinstance(key, torch.Tensor)
+        assert isinstance(value, torch.Tensor)
 
         assert query.shape[-1] == key.shape[-1]
         assert query.shape[-1] == value.shape[-1]
         assert query.shape[-1] == self.d_model
-
         assert key.shape[-2] == value.shape[-2]
 
-        if query.shape[-2] < self.query_kernel:
-            raise ValueError("Item dimension of query is smaller then query kernel")
-        if value.shape[-2] < self.content_kernel:
-            raise ValueError("Item dimension of value is smaller then content kernel")
+        query_kernel = self.query_kernel
+        content_kernel = self.content_kernel
 
-        if query.shape[-2]*self.compression[1] != value.shape[-2]*self.compression[0]:
-            raise ValueError("Query and content lengths were not provided in the correct ratio")
+        if self.run_pad:
+            revised_query, revised_key, revised_value = self.pad(query, key, value)
+        else:
+            if query.shape[-2] < self.query_kernel:
+                raise ValueError("Item dimension of query is smaller then query kernel")
+            if value.shape[-2] < self.content_kernel:
+                raise ValueError("Item dimension of value is smaller then content kernel")
+            if query.shape[-2]*self.compression[1] != value.shape[-2]*self.compression[0]:
+                raise ValueError("Query and content lengths were not provided in the correct ratio")
+
+            revised_query = query
+            revised_key = key
+            revised_value = value
 
         #Localize all entries, and create the dilation heads.
-        query = query.transpose(-1, -2) #(..., d_model, items)
-        key = key.transpose(-1, -2)
-        value = value.transpose(-1, -2)
+        revised_query = revised_query.transpose(-1, -2) #(..., d_model, items)
+        revised_key = revised_key.transpose(-1, -2)
+        revised_value = revised_value.transpose(-1, -2)
 
-        local_queries = Glimpses.dilocal(query, self.query_kernel, self.query_stride.item(), self.dilation) #(batch, d_model, head, same_item, query_local)
-        local_keys = Glimpses.dilocal(key, self.content_kernel, self.content_stride.item(), self.dilation)#(batch, d_model, head, same_item, local)
-        local_values = Glimpses.dilocal(value, self.content_kernel, self.content_stride.item(), self.dilation) #(batch, d_model, head, same_item, local)
+        local_queries = Glimpses.dilocal(revised_query, self.query_kernel.item(), self.query_stride.item(), self.dilation) #(batch, d_model, head, same_item, query_local)
+        local_keys = Glimpses.dilocal(revised_key, self.content_kernel.item(), self.content_stride.item(), self.dilation)#(batch, d_model, head, same_item, local)
+        local_values = Glimpses.dilocal(revised_value, self.content_kernel.item(), self.content_stride.item(), self.dilation) #(batch, d_model, head, same_item, local)
         local_values = torch.repeat_interleave(local_values, self.sampling, dim=-3)
 
         #Perform the heading interprojections for scoring
 
         local_queries = local_queries.transpose(-3, -2).transpose(-4, -1) #(batch, query_local, item, head, d_model)
         local_keys = local_keys.transpose(-3, -2).transpose(-4, -1) #(batch, local, item, head, d_model)
-        local_values = local_values.transpose(-3, -2).transpose(-4, -1)
+        local_values = local_values.transpose(-3, -2).transpose(-4, -1) #(..., item, head, local, d_model)
 
         local_queries = self._Query(local_queries) #(batch, query_local, item, head, d_small)
         local_keys = self._Key(local_keys)
@@ -325,17 +417,14 @@ class BandedMultiheadedAttention(nn.Module):
 
         attention = torch.matmul(score, local_values) #(batch, item, head, query_local, d_small)
 
-        #Delocalize, combine, and return
+        #Delocalize, combine, trim and return
 
         attention = attention.transpose(-4, -3).flatten(-3, -2) #(batch, head, item, d_small)
         attention = attention.transpose(-3, -2) #(batch, item, head, d_small)
         final_result = self._Collapse(attention) #(batch, item, d_model)
+        if self.trim and final_result.shape[-2] > query.shape[-2]:
+            final_result = final_result[..., :query.shape[-2], :]
         return final_result
-
-
-
-
-
 
 
 
