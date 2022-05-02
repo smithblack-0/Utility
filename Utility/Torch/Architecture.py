@@ -27,6 +27,10 @@ class CompositeComponentConverter(nn.Module):
     
     It is designed specifically to work well with banded transformers, and thus to analyze large documents.
 
+    A tensor which has been broken into somewhat global components is said to be in component form.
+    Meanwhile, when everything has been comined into one local tensor it is said to be in composite
+    format.
+
     -- fields --
 
     d_composite: The expected d_model dim of the composite tensor
