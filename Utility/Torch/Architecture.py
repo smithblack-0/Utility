@@ -95,7 +95,7 @@ class CompositeComponentConverter(nn.Module):
     def __init__(self,
                  d_models: List[int],
                  ratios: List[int],
-                 reducers: Optional[List[nn.Module]] = None):
+                 reducers: Optional[Union[List[nn.Module], str]] = None):
 
         """
 
@@ -121,16 +121,31 @@ class CompositeComponentConverter(nn.Module):
         :param reducers:
             Optional. A list of length d_models, containing callables. These callables
             take in a tensor of arbitrary shape, and reduce the last dimension to nothing.
+            May also be one of the presets of "max", "sum" or "mean". Is "sum" by default.
         """
         super().__init__()
 
-        if reducers is None:
+        if reducers is "max":
             class max_reducer(nn.Module):
                 def __init__(self):
                     super().__init__()
                 def forward(self, tensor):
                     return tensor.max(dim=-1).values
             reducers = [max_reducer() for _ in d_models]
+        if reducers is none or reducers is "sum":
+            class sum_reducer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                def forward(self, tensor):
+                    return tensor.sum(dim=-1)
+            reducers = [sum_reducer() for _ in d_models]
+        if reducers is "mean":
+            class mean_reducer(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                def forward(self, tensor: torch.Tensor):
+                    return tensor.mean(dim=-1)
+
         torch.jit.annotate(List[nn.Module], reducers)
 
         assert len(d_models) == len(ratios)

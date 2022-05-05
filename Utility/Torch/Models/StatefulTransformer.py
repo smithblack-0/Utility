@@ -8,16 +8,6 @@ from Utility.Torch import Learnables
 from typing import List
 
 
-class Encoder():
-    """ Encodes an incoming command or document"""
-    pass
-
-class State():
-    """Holds and updates the state document backend as questions are made"""
-    pass
-
-class Decoder():
-    """Decodes a response from the provided state"""
     
 class EncoderLayer(nn.Module):
     """
@@ -50,7 +40,7 @@ class EncoderLayer(nn.Module):
         
         self._TLayerNorms = nn.ModuleList([nn.LayerNorm(d_model) for d_model in CC_Converter.d_models])
         self._FLayerNorms = nn.ModuleList([nn.LayerNorm(d_model) for d_model in CC_Converter.d_models])
-        self._CLayerNorm = nn.LayerNorm(CC_Converter.d_total)
+        self._CFLayerNorm = nn.LayerNorm(CC_Converter.d_total)
       
         self._Converter = CC_Converter
         self._feedforwards = nn.ModuleList(feedforwards)
