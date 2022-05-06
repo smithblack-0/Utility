@@ -70,7 +70,6 @@ class EncoderLayer(nn.Module):
         self._ComponentAttn = []
 
         self._ComponentFF = [Learnables.Feedforward(d_model, d_model*4) for d_model in d_models]
-        self
 
 
         self._TLayerNorms = nn.ModuleList([nn.LayerNorm(d_model) for d_model in CC_Converter.d_models])
