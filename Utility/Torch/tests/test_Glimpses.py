@@ -130,6 +130,12 @@ class testLocal(unittest.TestCase):
         tensor[..., 0] = 30
         test = torch.all(final != test)
         self.assertTrue(test, "Logical failure: sync issues")
+    def test_Striding2(self):
+        test_tensor = torch.randn([10, 16])
+        output = Glimpses.local(test_tensor, 2, 2, 1)
+        self.assertTrue(output.shape[-2] == 8)
+        output = Glimpses.local(test_tensor, 4, 4, 1)
+        self.assertTrue(output.shape[-2] == 4)
 
 
 class testDilocal(unittest.TestCase):

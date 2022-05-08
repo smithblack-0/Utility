@@ -444,17 +444,16 @@ class FeedForward(nn.Module):
         tensor = self._ff2(tensor)
         return tensor
 
-class Feedforward(nn.Module):
-    """
 
-    Basic feedforward layer
-    """
-    def __init__(self, d_model: int, d_internal: int):
-        self._ff1 = Linear(d_model, d_internal)
-        self._ff2 = Linear(d_internal, d_model)
-    def forward(self, tensor):
-        tensor = self._ff1(tensor)
-        tensor = torch.relu(tensor)
-        tensor = self._ff2(tensor)
-        return tensor
+
+
+
+
+
+
+
+
+
+
+
 

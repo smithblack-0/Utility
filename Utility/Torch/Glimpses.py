@@ -192,14 +192,15 @@ def local(tensor: torch.Tensor,
     # data buffer a naive implimentation would go, in an additive manner. Striding, meanwhile
     # is a multiplictive factor
 
-    final_index_shape = tensor.shape[-1]
-    final_index_shape = final_index_shape - start_offset - end_offset
+    effective_length = tensor.shape[-1]
+    effective_length = effective_length - start_offset - end_offset
     dilated_kernel_width = (kernel_width-1)*(dilation_rate-1) + kernel_width
-    assert final_index_shape >= dilated_kernel_width, \
-        ("With given start and end offset insufficient material remains for kernel", final_index_shape, dilated_kernel_width)
 
-    final_index_shape = final_index_shape - dilated_kernel_width + 1  # apply
-    final_index_shape = final_index_shape // stride_rate  # Perform striding correction.
+    assert effective_length >= dilated_kernel_width, \
+        ("With given start and end offset insufficient material remains for kernel", effective_length, dilated_kernel_width)
+
+    effective_length = effective_length - dilated_kernel_width
+    final_index_shape = (effective_length + stride_rate)// stride_rate  # Perform striding correction.
 
     static_shape = torch.tensor(tensor.shape[:-1], dtype=torch.int64)
     dynamic_shape = torch.tensor((final_index_shape, kernel_width), dtype=torch.int64)

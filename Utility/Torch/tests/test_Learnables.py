@@ -3,7 +3,7 @@ import unittest
 import torch
 
 from torch import nn
-from Utility.Torch import Learnables
+from Utility.Torch.Learnables import EaseOfUse
 
 
 
@@ -171,6 +171,47 @@ class testBandedAttn(unittest.TestCase):
         tester = Learnables.BandedMultiheadedAttention(24, 3)
         tester = torch.jit.script(tester)
         tester(query, key, value)
+
+class test_TCMHA(unittest.TestCase):
+    def test_construct(self):
+        item = Learnables.TieredBMHAttention(64, 4, 3)
+    def test_attn(self):
+
+        key1 = torch.randn([2, 128, 16])
+        key2 = torch.randn([2, 16, 16])
+        key3 = torch.randn([2, 64, 16])
+
+        keybad = torch.randn([2, 20, 16])
+
+        query = torch.randn([2, 64, 16])
+
+        keys = [key1, key2, key3]
+        bad_keys = [key1, key2, keybad]
+
+        values = keys
+        bad_values = bad_keys
+
+
+        Learnables.TieredBMHAttention.component_attention(query, keys, values, 0)
+        Learnables.TieredBMHAttention.component_attention(query, keys, values, 5)
+        Learnables.TieredBMHAttention.component_attention(query, keys, values, 20)
+
+        def tester():
+            Learnables.TieredBMHAttention.component_attention(query, bad_keys, bad_values, 5)
+        self.assertRaises(AssertionError, tester)
+
+        compiled = torch.jit.script(Learnables.TieredBMHAttention.component_attention)
+    def test_forward(self):
+
+        stream1 = torch.randn([2, 256, 40])
+        stream2 = torch.randn([2, 128, 40])
+        stream3 = torch.randn([2, 64, 40])
+        stream4 = torch.randn([2, 32, 40])
+
+        stream = [stream1, stream2, stream3, stream4]
+
+        item = Learnables.TieredBMHAttention(40, 4, 3)
+        item(stream)
 
 
 
