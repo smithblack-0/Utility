@@ -3,11 +3,11 @@ from typing import Union, Sequence, Optional, Callable, List, Tuple
 
 import numpy as np
 import torch
+import math
+
 from torch import nn
 from torch.nn import functional as F
 
-import math
-from functools import wraps
 
 # perform library imports
 from Utility.Torch import Glimpses, Paddings
@@ -443,10 +443,6 @@ class FeedForward(nn.Module):
         tensor = self._activation(tensor)
         tensor = self._ff2(tensor)
         return tensor
-
-
-
-
 
 
 

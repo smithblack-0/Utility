@@ -9,11 +9,14 @@ from torch.nn import functional as F
 
 
 # perform library imports
+from Utility.Torch.Learnables import Layers
 from Utility.Torch import Glimpses, Paddings
-from Utility.Torch.Learnables import EaseOfUse
 
-class StreamConstructorCMHA(nn.Module):
-    pass
+
+
+
+
+
 
 class LocalContext(nn.Module):
     """
@@ -21,6 +24,164 @@ class LocalContext(nn.Module):
     Performs local context for an incoming stream. This is similar to a variety of
 
     """
+
+class PriorityAttention(nn.Module):
+    """
+
+    Ask a sequence of questions. Get a sequence of answers.
+
+    This accepts a list of streams and some sort of query. It then
+    commits an efficient lookup to answer the questions
+
+    Attention is performed with respect to each tier of the stream. critically,
+    the score portion of the attention mechanism is then used to decide whether to
+    continue working on the next portion of the stream.
+
+    """
+    @staticmethod
+    def create_composite_stream(streams: List[List[torch.Tensor]]):
+        streams = [list(x) for x in zip(*streams)]
+
+        # Create the composite stream. This consists of an entity in which the various teirs
+        # have been concatenated together, and the conversion parameters are retained. In particular
+        # it consists of, for each entry, a tier that is the composite of all the inputs, and
+        # for all but the last entry a expansion map, of same length as tier stream, which
+        # tells how many values a particular index is summarizing.
+        expansion_map = []
+        refined_stream = []
+        prior_lengths = None
+        for tier in streams:
+
+            lengths = []
+            tier_content = []
+            for j, stream in enumerate(tier):
+                tier_content.append(stream)
+                lengths.append(stream.shape[-2])
+
+            # concat, store
+            tier_content = torch.concat(tier_content, dim=-2)
+            lengths = torch.Tensor(lengths)
+            refined_stream.append(tier_content)
+            # Calculate expansion ratio for each tier item
+            if prior_lengths is not None:
+                ratios = lengths / prior_lengths
+                expansion = [torch.full([length], ratio) for length, ratio in zip(lengths, ratios)]
+                expansion = torch.concat(expansion)
+                expansion_map.append(expansion)
+            prior_lengths = lengths
+        return refined_stream, expansion_map
+
+
+
+    def __init__(self, d_query, d_stream, d_internal, total_depth, heads, threshold):
+        super().__init__()
+
+        self._threshold = threshold
+        self._total  = total_depth
+
+        self._QueryProjectors = nn.ModuleList([Layers.Linear(d_query, [heads, d_internal]) for _ in range(total_depth)])
+        self._KeyProjectors = nn.ModuleList([Layers.Linear(d_stream, [heads, d_internal]) for _ in range(total_depth)])
+        self._ValueProjectors = nn.ModuleList([Layers.Linear(d_stream, [heads, d_query]) for _ in range(total_depth)])
+        self._CollapseProjector = Layers.Linear([heads, d_query], d_query)
+
+
+    def forward(self, streams: List[List[torch.Tensor]], query: torch.Tensor):
+        """
+        :param streams: A list of streams.
+        :param query: A query. A torch tensor which it is wished to run against the stream.
+        :return: result, loss
+        """
+
+        composite_stream, expansions = self.create_composite_stream(streams)
+        index = torch.arange(composite_stream[0].shape[-2])
+        output = torch.zeros_like(query)
+        loss = torch.tensor(0.0)
+        for i, tier_content in enumerate(composite_stream):
+            #Perform setup projectons
+            content = tier_content[index]
+            Query_Projector = self._Query_Projectors[i]
+            Key_Projector = self._KeyProjectors[i]
+            Value_Projector = self._ValueProjectors[i]
+
+            #Perform projection
+            query = Query_Projector(query).transpose(-2, -3)
+            key = Key_Projector(content).transpose(-2, -3)
+            value = Value_Projector(content).transpose(-2, -3)
+
+            #Perform attention. Notice importantly the sigmoid function is used instead.
+            logits = torch.matmul(query, key.transpose(-1, -2))
+            score = torch.sigmoid(logits)
+            attn = torch.matmul(score, value)
+
+            #Update the index, if needed
+
+            if i+1 != len(composite_stream):
+
+                unspool = logits > self._threshold
+                unspool = torch.arange(index.shape[0]).masked_select(unspool)
+
+                index = index[unspool]
+                expansion = expansions[i]
+                expansion = expansion[index]
+                index = index.unsqueeze(-1)
+                index =
+
+            #Add results to output,
+            output = output+attn
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        #Generate treemappings
+        expansion_tier_map = [[]]*(len(streams) - 1)
+        refined_content = [[]]*len(streams)
+        for stream in enumerate(streams):
+
+            #Create the extension t
+            stream_map = []
+            tier_content = []
+            last_tier = None
+            for j, tier_content in enumerate(stream):
+
+                #Calculate the expansion ratio between the last and current tier
+                if last_tier is None:
+                    last_tier = tier_content
+                    continue
+                expansion_ratio = tier_content.shape[-2] //  last_tier.shape[-2]
+                stream_map.append(torch.full([last_tier.shape[-2]], expansion_ratio, dtype=torch.float32))
+
+                #Store away the current stream data
+                refined_content[j].append(tier_content)
+
+            stream_map = torch.concat(stream_map)
+            expansion_tier_map.append(stream_map)
+
+
+
+        #Transpose. Tier comes first
+
+        transposed_stream = [list(x) for x in zip(*streams)]
+
+        #Generate interconnectivity rates
+        for
+
+
+
+
+
+
+
+
 
 
 
@@ -52,30 +213,28 @@ class Interchange(nn.Module):
         - Stream exchange
     """
     @staticmethod
-    def component_attention(query: torch.Tensor,
-                            keys: List[torch.Tensor],
-                            values: List[torch.Tensor],
-                            kerneling: int = 0,
-                            mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def localized_component_attention(query: torch.Tensor,
+                                      keys: List[torch.Tensor],
+                                      values: List[torch.Tensor],
+                                      kerneling: int = 0,
+                                      blocking: int = 0,
+                                      mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
 
-        The attention step. Performs banded queried attention between
-        the keys and values, then stacks and returns the results. Responsible
-        for both examining local relationships and exchanging information between
-        diverse tiers.
+        Performs banded queried attention between a given query embedding and a list of
+        key, value tensors which are related to the length of the query embedding by
+        being found in multiples with respect to each other. In particular, the length
+        of the key/value pairs must either be a multiple of the query, or a factor of the query.
 
         :param query: The query to attend with respect to
         :param keys: The list of keys to attend to
         :param values: The list of values to attend to
-        :param kerneling: How much extra to look at beyond the N:M mapping
-            May detect local patterns.
+        :param kerneling: How much excess
         :return:
         """
 
-
-
         length = query.shape[-2]
-        query = query.transpose(-1, -2) #(..., data, item)
+        query = query.transpose(-1, -2)  # (..., data, item)
         processed_queries = []
         processed_keys = []
         processed_values = []
@@ -84,41 +243,48 @@ class Interchange(nn.Module):
             key = key.transpose(-1, -2)
             value = value.transpose(-1, -2)
 
-            if length > key.shape[-1]:
-                #Query greater than key
+            if length >= key.shape[-1]:
                 assert length % key.shape[-1] == 0, "query length was not found to be a multiple of key length"
-                repeat_rate = length//key.shape[-1]
+                repeat_rate = length // key.shape[-1]
 
-                key = F.pad(key, (math.ceil(kerneling/2), math.floor(kerneling/2)))
-                value = F.pad(value, (math.ceil(kerneling/2), math.floor(kerneling/2)))
+                query_kernel = repeat_rate
+                query_stride = repeat_rate
 
-                #Setup scheme to reuse the query kernel.
-                processed_queries.append(Glimpses.local(query, repeat_rate, repeat_rate, 1))
-                processed_keys.append(Glimpses.local(key, kerneling+1, 1, 1))
-                processed_values.append(Glimpses.local(value, kerneling+1, 1, 1))
-            if length < key.shape[-1]:
-                #Query less than key. Map many keys to one query
+                key_kernel = 1 * (1 + blocking) + kerneling
+                key_stride = 1
+
+                value_kernel = 1 * (1 + blocking) + kerneling
+                value_stride = 1
+
+                total_padding = 1 * blocking + kerneling
+                prepadding, postpadding = math.ceil(total_padding / 2), math.floor(total_padding / 2)
+                pad_op = (prepadding, postpadding)
+
+                key = F.pad(key, pad_op)
+                value = F.pad(value, pad_op)
+            else:
                 assert key.shape[-1] % length == 0, "key length was not found to be a multiple of query length"
-                repeat_rate = key.shape[-1]//length
+                repeat_rate = key.shape[-1] // length
 
-                key = F.pad(key, (math.ceil(kerneling/2), math.floor(kerneling/2)))
-                value = F.pad(value, (math.ceil(kerneling/2), math.floor(kerneling/2)))
+                query_kernel = 1
+                query_stride = 1
 
-                #We process one query with multiple keys, values
-                processed_queries.append(Glimpses.local(query, 1, 1, 1))
-                processed_keys.append(Glimpses.local(key, repeat_rate + kerneling, repeat_rate, 1))
-                processed_values.append(Glimpses.local(value, repeat_rate + kerneling, repeat_rate, 1))
+                key_kernel = repeat_rate * (blocking + 1) + kerneling
+                key_stride = repeat_rate
 
-            if length == key.shape[-1]:
-                #Query length equals key.
-                key = F.pad(key, (math.ceil(kerneling/2), math.floor(kerneling/2)))
-                value = F.pad(value, (math.ceil(kerneling/2), math.floor(kerneling/2)))
+                value_kernel = repeat_rate * (blocking + 1) + kerneling
+                value_stride = repeat_rate
 
+                total_padding = repeat_rate * blocking + kerneling
+                prepadding, postpadding = math.ceil(total_padding / 2), math.floor(total_padding / 2)
+                pad_op = (prepadding, postpadding)
 
-                processed_queries.append(Glimpses.local(query, 1, 1, 1))
-                processed_keys.append(Glimpses.local(key, kerneling + 1, 1, 1))
-                processed_values.append(Glimpses.local(value, kerneling +1, 1, 1))
+                key = F.pad(key, pad_op)
+                value = F.pad(value, pad_op)
 
+            processed_queries.append(Glimpses.local(query, query_kernel, query_stride, 1))
+            processed_keys.append(Glimpses.local(key, key_kernel, key_stride, 1))
+            processed_values.append(Glimpses.local(value, value_kernel, value_stride, 1))
 
         ##Reorder placing data on last dimension
         permute = list(range(query.dim() + 1))
@@ -132,9 +298,9 @@ class Interchange(nn.Module):
         output = []
         for query, key, value in zip(processed_queries, processed_keys, processed_values):
 
-            #Query is items, local, data.
-            #Key is items, local, data
-            #Value is items, local, data
+            # Query is items, local, data.
+            # Key is items, local, data
+            # Value is items, local, data
 
             score = torch.matmul(query, key.transpose(-1, -2))
             if mask is not None:
@@ -144,7 +310,7 @@ class Interchange(nn.Module):
             attn = torch.matmul(score, value)
             output.append(attn)
 
-        #Are now in item, local, data again
+        # Are now in item, local, data again
         output = [item.flatten(-3, -2) for item in output]
         output = torch.concat(output, dim=-1)
         return output
@@ -155,12 +321,14 @@ class Interchange(nn.Module):
                  heads: int = 3,
                  forward_interactivity: int = 1,
                  backward_interactivity: int = 1,
-                 localizing: int = 10,
+                 kerneling: int = 3,
+                 blocking: int = 2,
 
                  ):
         super().__init__()
 
-        self._kerneling = localizing
+        self._kerneling = kerneling
+        self._blocking = blocking
 
         #Calculate how to break apart the incoming data stream for best effect.
         #Save results for later use.
@@ -171,11 +339,11 @@ class Interchange(nn.Module):
         #Create the necessary layers. These are a bunch of layers which will mostly be
         #applied in parallel
 
-        self._QueryProjector = nn.ModuleList([Learnables.Linear(d_model, [heads, d_model]) for _ in range(stream_length)])
-        self._KeyProjector = nn.ModuleList([Learnables.Linear(d_model, [heads, d_model]) for _ in range(stream_length)])
-        self._ValueProjector = nn.ModuleList([Learnables.Linear(d_model, [heads, d_model]) for _ in range(stream_length)])
+        self._QueryProjector = nn.ModuleList([Layers.Linear(d_model, [heads, d_model]) for _ in range(stream_length)])
+        self._KeyProjector = nn.ModuleList([Layers.Linear(d_model, [heads, d_model]) for _ in range(stream_length)])
+        self._ValueProjector = nn.ModuleList([Layers.Linear(d_model, [heads, d_model]) for _ in range(stream_length)])
 
-        self._CollapseProjector = nn.ModuleList([Learnables.Linear([heads, d_model*length], d_model) for length in self._lengths])
+        self._CollapseProjector = nn.ModuleList([Layers.Linear([heads, d_model*length], d_model) for length in self._lengths])
 
     def forward(self, component_stream: List[torch.Tensor],
                 mask: Optional[List[torch.Tensor]] = None):
@@ -214,14 +382,14 @@ class Interchange(nn.Module):
             collapse = self._CollapseProjector[i]
 
             if mask is None:
-                attn = self.component_attention(
+                attn = self.localized_component_attention(
                     query,
                     local_keys[i],
                     local_values[i],
                     self._kerneling,
                 )
             else:
-                attn = self.component_attention(
+                attn = self.localized_component_attention(
                     query,
                     local_keys[i],
                     local_values[i],
@@ -234,3 +402,4 @@ class Interchange(nn.Module):
             attn = collapse(attn)
             output.append(attn)
         return output
+

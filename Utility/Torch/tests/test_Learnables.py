@@ -3,8 +3,8 @@ import unittest
 import torch
 
 from torch import nn
-from Utility.Torch.Learnables import EaseOfUse
-
+from Utility.Torch.Learnables import Layers
+from Utility.Torch.Learnables import StreamComponents
 
 
 class testLinear(unittest.TestCase):
@@ -15,7 +15,7 @@ class testLinear(unittest.TestCase):
         """ Tests if the standard pytorch linear layer is reproduced"""
 
         tensor = torch.rand([33, 2, 5])
-        tester = Learnables.Linear(5, 10)
+        tester = Layers.Linear(5, 10)
         test = tester(tensor)
         self.assertTrue(test.shape[-1] == 10, "Regular pytorch layer not reproduced")
     def test_Reshapes(self):
@@ -24,9 +24,9 @@ class testLinear(unittest.TestCase):
         tensor = torch.rand([30, 20, 15])
 
         #Define test layers
-        test_expansion = Learnables.Linear(15, [5, 3])
-        test_collapse = Learnables.Linear([20, 15], 300)
-        test_both = Learnables.Linear([20, 15], [10, 30])
+        test_expansion = Layers.Linear(15, [5, 3])
+        test_collapse = Layers.Linear([20, 15], 300)
+        test_both = Layers.Linear([20, 15], [10, 30])
 
         #Perform tests
 
@@ -49,8 +49,8 @@ class testLinear(unittest.TestCase):
 
         #Create test layers
 
-        test_single = Learnables.Linear(10, 20, 20)
-        test_multiple = Learnables.Linear(10, 20, (30, 20))
+        test_single = Layers.Linear(10, 20, 20)
+        test_multiple = Layers.Linear(10, 20, (30, 20))
 
         #Run tests
 
@@ -66,7 +66,7 @@ class testLinear(unittest.TestCase):
         
         #create tester
         
-        test_head_independence = Learnables.Linear(20, 20, 2)
+        test_head_independence = Layers.Linear(20, 20, 2)
         
         #Run tests
         
@@ -81,7 +81,7 @@ class testLinear(unittest.TestCase):
         test_tensor = torch.randn([20, 10])
         
         #Develop test layer
-        test_grad = Learnables.Linear([20, 10], 1)
+        test_grad = Layers.Linear([20, 10], 1)
 
         #Develop optim
         test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)
@@ -95,7 +95,7 @@ class testLinear(unittest.TestCase):
         """ Test whether or not the module is scriptable when instanced"""
         # Develop test layer
         test_tensor = torch.randn([30, 20, 20])
-        test_script = Learnables.Linear(20, 10, 1)
+        test_script = Layers.Linear(20, 10, 1)
 
         #Perform test
         scripted = torch.jit.script(test_script)
@@ -108,7 +108,7 @@ class testBandedAttn(unittest.TestCase):
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(24, 3)
+        tester = Layers.BandedMultiheadedAttention(24, 3)
         tester(query, key, value)
     def testCompressive(self):
         """ Test whether or not compression and expansion abilities are functioning"""
@@ -118,8 +118,8 @@ class testBandedAttn(unittest.TestCase):
         value1 = key1.detach()
         value2 = key2.detach()
 
-        tester_decompress = Learnables.BandedMultiheadedAttention(80, 20, compression_ratio=(1, 2))
-        tester_compress = Learnables.BandedMultiheadedAttention(80, 20, compression_ratio=(2, 1))
+        tester_decompress = Layers.BandedMultiheadedAttention(80, 20, compression_ratio=(1, 2))
+        tester_compress = Layers.BandedMultiheadedAttention(80, 20, compression_ratio=(2, 1))
 
         test_decompress = tester_decompress(query, key2, value2)
         test_compress = tester_compress(query, key1, value1)
@@ -129,7 +129,7 @@ class testBandedAttn(unittest.TestCase):
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(24, 3)
+        tester = Layers.BandedMultiheadedAttention(24, 3)
         test_optim = torch.optim.Adam(tester.parameters())
         params = [item.clone().detach() for item in tester.parameters()]
 
@@ -152,8 +152,8 @@ class testBandedAttn(unittest.TestCase):
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(24, 3)
-        tester2 = Learnables.BandedMultiheadedAttention(24, 3)
+        tester = Layers.BandedMultiheadedAttention(24, 3)
+        tester2 = Layers.BandedMultiheadedAttention(24, 3)
 
         state_dict = tester.state_dict()
         tester2.load_state_dict(state_dict)
@@ -168,13 +168,13 @@ class testBandedAttn(unittest.TestCase):
         key = query.clone()
         value = query.clone()
 
-        tester = Learnables.BandedMultiheadedAttention(24, 3)
+        tester = Layers.BandedMultiheadedAttention(24, 3)
         tester = torch.jit.script(tester)
         tester(query, key, value)
 
 class test_TCMHA(unittest.TestCase):
     def test_construct(self):
-        item = Learnables.TieredBMHAttention(64, 4, 3)
+        item = StreamComponents.Interchange(64, 4, 3)
     def test_attn(self):
 
         key1 = torch.randn([2, 128, 16])
@@ -192,15 +192,16 @@ class test_TCMHA(unittest.TestCase):
         bad_values = bad_keys
 
 
-        Learnables.TieredBMHAttention.component_attention(query, keys, values, 0)
-        Learnables.TieredBMHAttention.component_attention(query, keys, values, 5)
-        Learnables.TieredBMHAttention.component_attention(query, keys, values, 20)
+        StreamComponents.localized_component_attention(query, keys, values, 0)
+        StreamComponents.localized_component_attention(query, keys, values, 5)
+        StreamComponents.localized_component_attention(query, keys, values, 20)
+        StreamComponents.localized_component_attention(query, keys, values, 20, 4)
 
         def tester():
-            Learnables.TieredBMHAttention.component_attention(query, bad_keys, bad_values, 5)
+            StreamComponents.localized_component_attention(query, bad_keys, bad_values, 5)
         self.assertRaises(AssertionError, tester)
 
-        compiled = torch.jit.script(Learnables.TieredBMHAttention.component_attention)
+        compiled = torch.jit.script(StreamComponents.localized_component_attention)
     def test_forward(self):
 
         stream1 = torch.randn([2, 256, 40])
@@ -210,7 +211,7 @@ class test_TCMHA(unittest.TestCase):
 
         stream = [stream1, stream2, stream3, stream4]
 
-        item = Learnables.TieredBMHAttention(40, 4, 3)
+        item = StreamComponents.Interchange(40, 4, 3)
         item(stream)
 
 
