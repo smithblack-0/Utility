@@ -25,7 +25,7 @@ class LocalContext(nn.Module):
 
     """
 
-class PriorityAttention(nn.Module):
+class PriorityStreamAttention(nn.Module):
     """
 
     Ask a sequence of questions. Get a sequence of answers.
@@ -97,7 +97,7 @@ class PriorityAttention(nn.Module):
         output = torch.zeros_like(query)
         loss = torch.tensor(0.0)
         for i, tier_content in enumerate(composite_stream):
-            #Perform setup projectons
+            #Perform setup projections
             content = tier_content[index]
             Query_Projector = self._Query_Projectors[i]
             Key_Projector = self._KeyProjectors[i]
@@ -108,23 +108,26 @@ class PriorityAttention(nn.Module):
             key = Key_Projector(content).transpose(-2, -3)
             value = Value_Projector(content).transpose(-2, -3)
 
-            #Perform attention. Notice importantly the sigmoid function is used instead.
+            #Perform attention. Notice importantly the sigmoid function is used.
+            #This is required, as it might not be entirely clear whether the
+            #subentries are relevant until we get to them.
             logits = torch.matmul(query, key.transpose(-1, -2))
             score = torch.sigmoid(logits)
             attn = torch.matmul(score, value)
 
             #Update the index, if needed
 
-            if i+1 != len(composite_stream):
+            if len(expansions) > 0:
 
                 unspool = logits > self._threshold
                 unspool = torch.arange(index.shape[0]).masked_select(unspool)
 
                 index = index[unspool]
-                expansion = expansions[i]
+                expansion = expansions.pop(0)
                 expansion = expansion[index]
                 index = index.unsqueeze(-1)
-                index =
+                index = index*expansion
+                index = index.flatten()
 
             #Add results to output,
             output = output+attn
