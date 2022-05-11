@@ -14,8 +14,7 @@ from Utility.Torch import Glimpses, Paddings
 
 
 
-
-
+class
 
 
 class LocalContext(nn.Module):
@@ -47,6 +46,7 @@ class PriorityStreamAttention(nn.Module):
         # it consists of, for each entry, a tier that is the composite of all the inputs, and
         # for all but the last entry a expansion map, of same length as tier stream, which
         # tells how many values a particular index is summarizing.
+
         expansion_map = []
         refined_stream = []
         prior_lengths = None
@@ -70,14 +70,40 @@ class PriorityStreamAttention(nn.Module):
                 expansion_map.append(expansion)
             prior_lengths = lengths
         return refined_stream, expansion_map
+    def __init__(self,
+                 d_query: int,
+                 d_stream: int,
+                 d_internal: int,
+                 total_depth: int,
+                 heads: int,
+                 threshold: float,
+                 attn_activation: str = "sigmoid",
+                 unspool_source: str = "logits"):
+        """
 
+        :param d_query: how wide the query inputs will be
+        :param d_stream: how wide each stream input will be
+        :param d_internal: how wide we wish the internal logic channel to be
+        :param total_depth: the maximum stream depth to setup projectors for
+        :param heads: The number of projection heads to make
+        :param threshold: The threshold for unspooling purposes
+        :param attn_activation: The type of attention activation function. This applies
+            after multiplying the key and query together. The three availble are
+            "sigmoid", "softmax", and "raw", with raw using the raw logits and the
+            rest being the standard functions
+        :param unspool_source:
+            The location that the unspooling mechanism gets its information from.
+            The two options are "logits" and "score". "logits" threshold's the
+            raw logits before they would run through the attn_activation. "score"
+            runs the activation, then thresholds the result.
 
-
-    def __init__(self, d_query, d_stream, d_internal, total_depth, heads, threshold):
+        """
         super().__init__()
 
         self._threshold = threshold
         self._total  = total_depth
+        self._attn_mode = attn_activation
+        self._unspooling_mode = unspool_source
 
         self._QueryProjectors = nn.ModuleList([Layers.Linear(d_query, [heads, d_internal]) for _ in range(total_depth)])
         self._KeyProjectors = nn.ModuleList([Layers.Linear(d_stream, [heads, d_internal]) for _ in range(total_depth)])
@@ -96,42 +122,70 @@ class PriorityStreamAttention(nn.Module):
         index = torch.arange(composite_stream[0].shape[-2])
         output = torch.zeros_like(query)
         loss = torch.tensor(0.0)
-        for i, tier_content in enumerate(composite_stream):
-            #Perform setup projections
-            content = tier_content[index]
+        for i in range(len(composite_stream)):
+
+            #Get content from the current tier. Only keep content which
+            #matches the active index
+            content = composite_stream[i]
+            content = content[..., index, :]
+
+            if content.shape[-2] == 0:
+                #We have excluded all
+                #valid indices. Stop early
+                break
+
+            #Get and perform the projections for the current layer. Create heads.
+            #place output into (..., head, item, channel) format.
             Query_Projector = self._Query_Projectors[i]
             Key_Projector = self._KeyProjectors[i]
             Value_Projector = self._ValueProjectors[i]
 
-            #Perform projection
             query = Query_Projector(query).transpose(-2, -3)
             key = Key_Projector(content).transpose(-2, -3)
-            value = Value_Projector(content).transpose(-2, -3)
+            value = Value_Projector(content).transpose(-2, -3).unsqueeze(-1)
 
-            #Perform attention. Notice importantly the sigmoid function is used.
-            #This is required, as it might not be entirely clear whether the
-            #subentries are relevant until we get to them.
+            #Perform attention. Three modes are defined. These are
+            #sigmoid, softmax, and raw.
             logits = torch.matmul(query, key.transpose(-1, -2))
-            score = torch.sigmoid(logits)
-            attn = torch.matmul(score, value)
+            if self._attn_mode == "sigmoid":
+                score = torch.sigmoid(logits)
+            elif self._attn_mode == "softmax":
+                score = torch.softmax(logits, dim=-1)
+            elif self._attn_mode == "raw":
+                score = logits
+            else:
+                raise ValueError("Provided mode was not well defined")
 
-            #Update the index, if needed
+            attn = torch.mul(score, value.transpose(-1, -2))
+            attn = torch.matmul(score, value).squeeze(-1)
 
-            if len(expansions) > 0:
 
-                unspool = logits > self._threshold
-                unspool = torch.arange(index.shape[0]).masked_select(unspool)
+            if i + 1 < len(composite_stream):
+                #If there remains tiers for next time, restrict which
+                #ones are examined based on how active this time's tiers
+                #were. Update the index accordingly.
 
-                index = index[unspool]
-                expansion = expansions.pop(0)
-                expansion = expansion[index]
-                index = index.unsqueeze(-1)
-                index = index*expansion
-                index = index.flatten()
+                if self._unspooling_mode == "logits":
+                    unspool = logits > self._threshold
+                elif self._unspooling_mode == "score":
+                    unspool = score > self._threshold
+                else:
+                    raise ValueError("Provided unspooling source is invalid")
 
-            #Add results to output,
+                new_index = index.masked_select(unspool)
+                expansion_ratios = expansions[i]
+                expansion_ratios = expansion_ratios[index]
+
+                new_index = [torch.arange(item, item+ratio) for item, ratio in zip(new_index, expansion_ratios)]
+                new_index = torch.concat(new_index)
+                index = new_index
+
+            #Add results to output. Also, collect loss, which depends
+            #entirely on how active the score logits are and particularly
+            #on how many score logits are active.
             output = output+attn
-
+            loss = loss + torch.relu(logits - self._threshold)
+        return output, loss
 
 
 

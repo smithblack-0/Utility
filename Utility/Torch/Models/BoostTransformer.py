@@ -7,23 +7,118 @@ and a_f is global
 
 
 """
+from typing import List
 
 import torch
 from torch import nn
 from Utility.Torch import Learnables
 from Utility.Torch import Architecture
 
-
-class EncoderLayer(nn.Module):
+class AttentionSublayer(nn.Module):
     """
 
-    A complete EncoderLayer.
+    """
 
-    Performs component breakdown and processing,
-    then recombines result and performs holistic
-    processing.
 
-    Add plus layernorm for every step
+class StreamProcessingLayer(nn.Module):
+    """
+    Contains the memory exchange logic and residual bypass functions.
+
+    Inside this layer is defined the memory exchange logic. The first thing that will happen
+    is that prior residuals will be added together, and then normalized. Following this, an
+    exchange is made transfering stream information into the memory. The provided
+    sequence of text_stream_processing and memory_stream_processing layers are then called.
+
+    Finally, the memory is used to condition the text stream, the residuals are generated, and returned
+
+    """
+    class AddNorm(nn.Module):
+        def __init__(self, d_model):
+            super().__init__()
+
+            self._norm = nn.LayerNorm(d_model)
+        def forward(self, *args):
+            output = torch.stack(args, dim=0).sum(dim=0)
+            output = self._norm(output)
+            return output
+
+    class SubLayer(nn.Module):
+        def __init__(self, module, d_model):
+
+            super().__init__()
+
+            self._module = module
+            self._norm = nn.LayerNorm(d_model)
+        def forward(self, tensor: torch.Tensor, *args):
+            """
+            Only passes forward the first input
+
+            :param tensor:
+            :param args:
+            :return:
+            """
+            output = self._norm(tensor)
+            output = self._module(tensor, *args)
+            output = output + tensor
+            return output
+
+    def __init__(self,
+                 d_stream: int,
+                 d_memory: int,
+                 heads: int,
+                 text_stream_processing: List[nn.Module],
+                 memory_processing: List[nn.Module],
+                 ):
+        """
+
+        :param text_stream_processing: A sequence of layers, called to process the traveling text stream
+        :param memory_processing: A sequence of layers, called to process the traveling memory sequence.
+        """
+        super().__init__()
+
+        #Create the intake layernorms
+
+        self._intake_stream_norm = self.AddNorm(d_stream)
+        self._intake_memory_norm = self.AddNorm(d_memory)
+        self._transfer_into_memory_norm = nn.LayerNorm(d_memory)
+
+        #Create the stack layernorms, and the process stacks. Do NOT wrap the last layer in the sequence
+
+
+        self._stream2memory = nn.MultiheadAttention(d_memory, heads, 0.1, kdim=d_stream, vdim=d_stream)
+        self._memory2stream = nn.MultiheadAttention(d_stream, heads, 0.1, kdim=d_memory, vdim=d_memory)
+
+
+    def forward(self,
+                text_stream: torch.Tensor,
+                residual: torch.Tensor,
+                memory: torch.Tensor):
+
+        #Import the residuals, and transfer summaries into memory.
+        stream = self._intake_stream_norm(text_stream + residual)
+        memory = self._intake_memory_norm(memory)
+
+        memory = self._transfer_into_memory_norm(memory + self._stream2memory(memory, stream, stream))
+
+        #process layers in parallel
+
+
+class SummarizationLayer(nn.Module):
+    """
+
+    Contains a primary
+
+    """
+
+class EncoderSubLayer(nn.Module):
+    """
+
+    A complete encoder sequence, without additional parallel instances
+    . Consists of the
+    residual bypass, resampling, globalization,
+    and summarization which occurs for a single layer.
+
+    Returns the layer residuals, and the summary.
 
     """
 
