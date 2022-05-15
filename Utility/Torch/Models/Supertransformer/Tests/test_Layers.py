@@ -3,7 +3,7 @@ from typing import List
 
 import torch
 from torch import nn
-from Utility.Torch.Models.Memory_Oracle_Transformer.Layers import TextStream
+from Utility.Torch.Models.Supertransformer.Layers import TextStream
 
 
 
