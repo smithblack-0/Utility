@@ -27,6 +27,7 @@ Pseudotree: A concept in which the attention weights, or 'scores', are said to f
     it can be said to be a tree under it.
 """
 
+from __future__ import annotations
 import math
 from typing import List, Tuple, Optional
 
@@ -128,14 +129,11 @@ class TreeEncodeLayer(nn.Module):
         value_projector = Layers.Linear(d_final, [heads, d_final])
         collapse_projector = Layers.Linear([heads, d_final], d_final)
 
-        memory_conditioning = nn.MultiheadAttention(d_memory, heads, dropout, kdim=d_memory, vdim=d_memory, batch_first=True)
-
         #Store entries
 
         self._dropout = dropout
         self._seed = seed
         self._norm = norm
-        self._memory = memory_conditioning
 
         self._query_project = query_projector
         self._key_project = key_projector
@@ -143,100 +141,16 @@ class TreeEncodeLayer(nn.Module):
         self._collapse = collapse_projector
 
     def forward(self,
-                tree_values: torch.Tensor,
-                memory: torch.Tensor):
-
-
-        query_seed = self._memory(self._seed, memory, memory)
+                tree_values: torch.Tensor):
 
         #Setup query, key, value to possess heads and such
-        query = self._query_project(query_seed).transpose(-2, -3).contiguous()
+        query = self._query_project(self._seed).transpose(-2, -3).contiguous()
         key = self._key_project(tree_values).transpose(-2, -3).contiguous()
         value = self._value_project(tree_values).transpose(-2, -3).contiguous()
 
         #Perform attention. Return result
         output, score = self._scaled_dot_product_attention(query, key, value, dropout_p=self._dropout)
         return output, score.sum(dim=-1)
-
-
-
-class TreeEncodeSubmodel(nn.Module):
-    """
-    A complete tree encoding submodel, capable of generating
-    a utility tree. Accepts a stream, memory tensor pair.
-    Generates an interrelated tree stack, along with the required
-    interrelated tensors for backmasking.
-
-    """
-    @classmethod
-    def make_submodel(cls,
-                      d_final: int,
-                      d_memory: int,
-                      d_stream: int,
-                      widths: List[int],
-                      heads: int,
-                      dropout: float,
-                      dtype: torch.dtype
-                      ):
-        """
-        Makes a submodel using the given parameters.
-
-        :param d_final: The final embeddign dimension
-        :param d_memory: The memory embedding dimension
-        :param d_stream: The stream embedding dimesion
-        :param widths: A list of the widths of the stream heights
-        :param heads: The heads to use
-        :param dropout: The dropout rate to use
-        :param dtype: The dtype
-        :return: A new TreeEncodeSubmodel
-        """
-        layers = []
-        for width in widths:
-            layers.append(TreeEncodeLayer(d_stream, d_memory, d_final, width, heads, dropout, dtype))
-        return TreeEncodeSubmodel(d_final, widths, layers, dtype)
-
-    def __init__(self,
-                 d_final: int,
-                 widths: List[int],
-                 layers: List[nn.Module],
-                 dtype: torch.dtype
-                 ):
-
-        super(TreeEncodeSubmodel, self).__init__()
-        self._layers = nn.ModuleList(layers)
-        self._widths = widths
-        self._d_final = d_final
-        self._dtype = dtype
-
-    def forward(self,
-                text_stream: torch.Tensor,
-                memory: torch.Tensor,
-                ):
-
-        first_loop = True
-        lookup_reference: torch.Tensor = torch.tensor(0)
-        tree_representation: torch.Tensor = torch.tensor(0)
-        tensor = text_stream
-        for layer in self._layers:
-            tensor, subop = layer(tensor, memory)
-
-            if first_loop:
-                lookup_reference = tensor
-                tree_representation = subop
-                first_loop = False
-                continue
-
-            tree_update = torch.matmul(subop.transpose(-1, -2), tree_representation)
-            tree_representation = torch.concat([subop, tree_update], dim=-1)
-            lookup_reference = torch.concat([tensor, lookup_reference], dim=-1)
-
-        identity_shape = list(tree_representation.shape[:-3]) + [tree_representation.shape[-1], tree_representation.shape[-1]]
-        top_level_representation = torch.eye(tree_representation.shape[-1])
-        top_level_representation = torch.broadcast_to(top_level_representation, identity_shape)
-        tree_representation = torch.concat([top_level_representation, tree_representation], dim=-1)
-
-        return lookup_reference, tree_representation
-
 
 
 
@@ -249,10 +163,7 @@ class TreeEncode(nn.Module):
 
     @staticmethod
     def make_submodel(
-                      total_submodels: int,
-                      d_final: int,
-                      d_memory: int,
-                      d_stream: int,
+                      d_model: int,
                       widths: List[int],
                       heads: int,
                       dropout: float,
@@ -271,9 +182,9 @@ class TreeEncode(nn.Module):
         :param dtype: The dtype
         :return: A new TreeEncodeSubmodel
         """
-        submodels = []
+        layers = []
         for _ in range(total_submodels):
-            submodel = TreeEncodeSubmodel.make_submodel(d_final, d_memory, d_stream, widths, heads, dropout, dtype)
+            layer = TreeEncodeLayer(d_model, )
             submodels.append(submodel)
         return TreeEncode(submodels)
     def __init__(self, submodels: List[nn.Module]):
@@ -286,20 +197,54 @@ class TreeEncode(nn.Module):
                 memories: List[torch.Tensor]):
 
         #Develop reference and tree representation.
-        lookup_references: List[torch.Tensor] = []
-        tree_representations: List[torch.Tensor] = []
+        lookup_references: List[List[torch.Tensor]] = []
+        tree_representations: List[List[torch.Tensor]] = []
 
         for submodel, text_stream, memory in zip(self._submodels, text_streams, memories):
             sublookup_reference, subtree_rep = submodel(text_stream, memory)
             lookup_references.append(sublookup_reference)
             tree_representations.append(subtree_rep)
 
-        lookup_reference = torch.concat(lookup_references, dim=-2)
-        tree_representation = torch.concat(tree_representations, dim=-1)
+        lookup_references = list(map(list, zip(*lookup_references)))
+        tree_representations = list(map(list, zip(*tree_representations)))
+        final_lookup_references = [torch.concat(item, dim=-1) for item in lookup_references]
 
-        return lookup_reference, tree_representation
 
-class KnowledgeBase()
+
+        return lookup_references, tree_representations
+
+
+class KnowledgeTensor():
+    """
+    A collector for knowledge from various locations. Stores information
+    in a sparse manner. Forgets unused knowledge. Returns it's update
+    when a lookup is performed.
+    """
+    def lookup(self,
+               query: torch.Tensor,
+               decay: bool = True)-> Tuple[KnowledgeTensor, torch.Tensor, torch.Tensor]:
+        """
+
+        :param query:
+        :param decay:
+        :returns: KnowledgeTensor, query_result, loss
+        """
+
+    def append(self,
+               lookup_references: List[List[torch.Tensor]],
+               access_references: List[List[torch.Tensor]]):
+
+
+
+    def __init__(self,
+                 layer_index: List[torch.Tensor]
+                 layer_access: List[torch.Tensor]
+                 layer_descend: List[torch.Tensor]
+
+                 ):
+
+        self.levels = levels
+        self.
 
 
 class Oracle(nn.Module):

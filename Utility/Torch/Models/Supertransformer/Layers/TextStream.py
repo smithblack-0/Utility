@@ -194,7 +194,6 @@ class Stream_Model(nn.Module):
                  d_memory: int,
                  memory_width: int,
                  stream_submodels: List[nn.Module],
-                 calibration_layer: nn.Module,
                  dtype):
         """
         :param d_memory: The encoding width of the memory layers
@@ -265,7 +264,7 @@ class SubmodelLogits(nn.Module):
     def forward(self,
                 text_stream: torch.Tensor,
                 memory: torch.Tensor,
-                running_logits: torch.Tensor)-> Tuple[torch.Tensor, torch.Tensor]:
+                running_stream: torch.Tensor)-> Tuple[torch.Tensor, torch.Tensor]:
 
         text_stream = self._norm0(text_stream) #Required due to format of stacked layers.
 
@@ -275,13 +274,31 @@ class SubmodelLogits(nn.Module):
 
         feedforward = self._ff(text_stream)
         text_stream = self._norm2(feedforward + text_stream)
+        text_stream = text_stream + running_stream
 
         #Logits and predictions.
         logits = self._logit(text_stream)
-        logits = logits + running_logits
+        return logits, text_stream
 
-        return logits
+class ModelReductionEndpoint(nn.Module):
+    """
+    Creates a single output where previously there were
+    many. HIGHLY compatible with unsupervised training techniques.
+    """
+    def __init__(self, Submodel_Logits: List[nn.Module]):
+        """
+        :param Submodel_Logits: A collection of submodel
+        logits capable of calculating the logits for a
+        particular submodel.
+        """
+        super().__init__()
+        self._submodel_logits = Submodel_Logits
 
+    def forward(self, text_streams: List[torch.Tensor], memories: List[torch.Tensor]):
+        running_stream = torch.zeros_like(text_streams[0])
+        for layer, stream, memory in zip(self._submodel_logits, text_streams, memories):
+            _, running_stream = layer(stream, memory, running_stream)
+        return running_stream
 
 
 class ModelPredictionEndpoint(nn.Module):
@@ -292,9 +309,7 @@ class ModelPredictionEndpoint(nn.Module):
     using it to make predictions.
 
     """
-    def __init__(self,
-                 vocabulary_size: int,
-                 Submodel_Logits: List[nn.Module]):
+    def __init__(self, Submodel_Logits: List[nn.Module]):
         """
         :param vocabulary_size: How big the output vector should be.
         :param Submodel_Logits: A collection of submodel
@@ -302,14 +317,12 @@ class ModelPredictionEndpoint(nn.Module):
         particular submodel.
         """
         super().__init__()
-        self._seed_shape = torch.zeros([vocabulary_size], dtype=torch.float32, requires_grad=False)
         self._submodel_logits = Submodel_Logits
 
     def forward(self, text_streams: List[torch.Tensor], memories: List[torch.Tensor]):
-
-        logits = self._seed_shape
+        running_stream = torch.zeros_like(text_streams[0])
         for layer, stream, memory in zip(self._submodel_logits, text_streams, memories):
-            logits = layer(stream, memory, logits)
+            logits, running_stream = layer(stream, memory, running_stream)
         predictions = torch.softmax(logits, dim=-1)
         return predictions, logits
 
@@ -347,11 +360,10 @@ class ModelTrainingEndpoint(nn.Module):
 
         total_loss = torch.tensor(0.0)
         weight = torch.ones([text_streams[0].shape[-1]], dtype=torch.float32)
-        logits = self._seed
-        prediction = torch.softmax(logits, dim=-1)
+        running_stream = torch.zeros_like(text_streams[0])
         for layer, stream, memory in zip(self._submodel_logits, text_streams, memories):
 
-            logits = layer(stream, memory, logits)
+            logits, running_stream = layer(stream, memory, running_stream)
 
             prediction = torch.softmax(logits, dim=-1)
             loss = F.cross_entropy(prediction, labels, weight, reduction="none")
@@ -360,5 +372,3 @@ class ModelTrainingEndpoint(nn.Module):
             weight = loss*self._boost_factor
 
         return total_loss, prediction, logits
-
-
