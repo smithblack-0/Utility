@@ -13,12 +13,17 @@ from Utility.Torch.Learnables import Layers
 from Utility.Torch.Models.Supertransformer.Layers.TransformerBusTools import\
     DataLayer, TaskMemoryLayer,  Data2TaskMemory, TaskMemory2Data
 
-class BusInterchangeUnit(nn.Module):
+class TaskBusUnit(nn.Module):
     """
 
-    Enlarges or shrinks the width of the taskmemory bus encodings, with
-    appropriate feedforward
+    An outer class, designed to allow the smooth flow of large quantities of
+    information between some sort of large main bus and various subentries.
 
+    Uses a LSTM pattern driven by the taskmemory bus, and only travels horizontally. The
+    memory bus controls the LSTM like intake, and the hidden state is provided by the
+    last submodel.
+
+    Importantly, can be much, much, much wider if desired.
     """
 
 class TaskProcessingUnit(nn.Module):
@@ -35,9 +40,7 @@ class TaskProcessingUnit(nn.Module):
     """
     class AddLayerNorm(nn.Module):
         """
-
         A small helper class for layernorming
-
         """
         def __init__(self, d_model: int, layer: nn.Module):
             super().__init__()
