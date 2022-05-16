@@ -1,0 +1,22 @@
+Just a place to keep all my thoughts regarding how this thing should work
+
+
+Behavior:
+
+The model should accept two types of inputs. These are tasks, and documents. Tasks are directives to do
+something, and are required. Documents are items which can be of arbitrary length, and which the model
+can interact with.
+
+Memory.
+
+Multiple memories exist within the model
+
+The short term types are:
+
+TaskMemory: Governed solely by what the provided task currently is. Recursive.
+WorkingMemory: Fixed length. Encodings may be placed here out of other memory types. Recursive
+DocumentMemory: Documents are shoved into here. Nonrecusive
+
+The long term type is:
+
+CrossBatchMemory: FixedLength. Shared between batches. May be transferred into

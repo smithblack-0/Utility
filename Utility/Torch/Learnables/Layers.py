@@ -433,14 +433,16 @@ class FeedForward(nn.Module):
     Nothing much to see here.
     """
 
-    def __init__(self, d_model, dim_feedforward=2048):
+    def __init__(self, d_model, dim_feedforward=2048, dropout=0.0):
         super().__init__()
         self._ff1 = Linear(d_model, dim_feedforward)
         self._ff2 = Linear(dim_feedforward, d_model)
+        self._dropout = nn.Dropout(dropout)
         self._activation = torch.relu
     def forward(self, tensor):
         tensor = self._ff1(tensor)
         tensor = self._activation(tensor)
+        tensor = self._dropout(tensor)
         tensor = self._ff2(tensor)
         return tensor
 
