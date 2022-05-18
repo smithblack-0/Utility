@@ -6,6 +6,9 @@ are constant shape, while the data tensors are of arbitrary nature.
 
 The purpose of this section is to provide utilities to produce meaning out of this.
 Being an ensemble, boosting is a useful trick, and the loss enpdoints take advantage of this.
+
+Endpoint data unit: https://docs.google.com/drawings/d/1KC4RlsFtZZtLY_qKPRClf2fFgqTxt4P_bzhAsP5uzMg/edit
+
 """
 
 
