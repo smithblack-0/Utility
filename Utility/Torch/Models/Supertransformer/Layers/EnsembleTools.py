@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import List, Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple, Dict
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 from Utility.Torch.Learnables import Layers
+from Utility.Torch.Models.Supertransformer.Layers import StreamTools
 
 
 """
@@ -108,59 +109,82 @@ def make_SuperEnsemble(total_submodels: int,
 
 
 
-
-
-class SubModel(nn.Module):
+class ReducingSubModel(nn.Module):
     """
-    A single submodel. This is responsible for taking
-    in a memory start, a tensor start, and the current memory
-    plus tensor residuals. It then performs processing based on
-    this, creating outputs for all of these. It is a single
-    sequential submodel in a model super ensemble.
-
-    It must display the requested memory start
-    as well.
+    A single residually active submodel. Uses combinative reduction
+    for residuals. May perform many residuals to one merge.
     """
-    def __init__(self,
-                sublayers: List[nn.Module],
-                 ):
+    def __init__(self, sublayers: List[nn.Module]):
+
+
         super().__init__()
         layers = [torch.jit.script(layer) for layer in sublayers]
         self._layers = nn.ModuleList(layers)
+
     def forward(self,
-                tensor: torch.Tensor,
-                memory: torch.Tensor,
-                tensor_residuals: Optional[List[torch.Tensor]] = None,
-                memory_residuals: Optional[List[torch.Tensor]] = None,
+                input_stream: StreamTools.StreamTensor,
+                residuals_stream: Optional[List[List[StreamTools.StreamTensor]]] = None
                 ):
 
-        new_tensor_residuals = []
-        new_memory_residuals = []
-        tensor = tensor
+        new_residuals = []
+        stream = input_stream
         for i, layer in enumerate(self._layers):
+            if residuals_stream is not None:
+                residuals = residuals_stream[i]
+                residuals = [residual.branch(stream.names) for residual in residuals]
+                stream = StreamTools.stream_merge([stream] + residuals, self._mode, "sum")
+            stream = layer(stream)
+            new_residuals.append(stream)
+        final_stream = stream
+        return final_stream, new_residuals
 
-            #Get tensor residuals. Handle cases where nonexistant.
-            if tensor_residuals is None:
-                tensor_residual = torch.zeros_like(tensor)
+class ConcatSubModel(nn.Module):
+    """
+     A single residually active submodel. Uses concatenation to manage
+     it's residuals.
+
+     Each iteration, the prior residuals are concatenated
+     on, the layer is run, and then the appropriate units are split off.
+     """
+    def __init__(self,
+                 sublayers: List[nn.Module],
+                 defaults: Dict[str, int]):
+
+
+        super().__init__()
+        layers = [torch.jit.script(layer) for layer in sublayers]
+        self._layers = nn.ModuleList(layers)
+        self._defaults = defaults
+        self._zeros = StreamTools.StreamTensor({key: [value] for (key, value) in defaults})
+    def forward(self,
+                input_stream: StreamTools.StreamTensor,
+                residuals_stream: Optional[List[StreamTools.StreamTensor]] = None
+                ):
+
+        assert self._defaults.keys() in input_stream
+        initial_widths = {name: input_stream.stream[name].shape[-1] for name in self._defaults.keys()}
+        concat_widths = self._defaults
+        breakapart = {name: [initial_widths[name], concat_widths[name]] for name in initial_widths}
+
+        new_residuals = []
+        stream = input_stream
+        for i, layer in enumerate(self._layers):
+            if residuals_stream is not None:
+                residual = residuals_stream[i]
             else:
-                tensor_residual = tensor_residuals[i]
+                stream_data = {}
+                for name, length in self._defaults:
+                    shape = list(stream.stream[name].shape[:-1]) + [length]
+                    tensor = torch.zeros(shape)
+                    stream_data[name] = tensor
+                residual = StreamTools.StreamTensor(stream_data)
 
-            #Get memory residuals
-            if memory_residuals is None:
-                memory_residual = torch.zeros_like(memory)
-            else:
-                memory_residual = memory_residuals[i]
-
-            #Update, calculate, apply
-
-            tensor = tensor + tensor_residual
-            memory = memory + memory_residual
-            tensor, memory = layer(tensor, memory)
-
-            new_tensor_residuals.append(tensor)
-            new_memory_residuals.append(memory)
-        return tensor, memory, new_tensor_residuals, new_memory_residuals
-
+            stream = StreamTools.stream_concat([stream, residual], dim=-1)
+            stream = layer(stream)
+            stream, residual = StreamTools.stream_split(stream, breakapart)
+            new_residuals.append(residual)
+        final_stream = stream
+        return final_stream, new_residuals
 
 
 class MemSeed(nn.Module):
@@ -203,7 +227,7 @@ class SuperEnsemble(nn.Module):
     """
 
     def __init__(self,
-                 stream_submodels: List[nn.Module],
+                 stream_submodels: List[SubModel],
                  task_seeds: List[MemSeed],
                  ):
         """
