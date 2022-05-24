@@ -31,6 +31,19 @@ travel together throughout a model. Generally, there exists a primary stream,
 and a sequence of alternative streams.
 """
 
+class StreamStorage(nn.Module):
+    """
+    A savable module. Contains one important function,
+    to stream, which will reconstruct the stream that was
+    used to make it.
+    """
+
+
+    def __init__(self, stream: StreamTensor):
+        super().__init__()
+
+
+
 @torch.jit.script
 class StreamTensor():
     """
@@ -180,6 +193,8 @@ class StreamTensor():
             output_collection.append(streamtensor)
 
         return output_collection
+    def to_module(self):
+        """ Produces a savable module capable of remaking this stream"""
 
     def __init__(self,
                  stream: Optional[Dict[str, torch.Tensor]] = None,

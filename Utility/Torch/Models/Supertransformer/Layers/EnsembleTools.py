@@ -10,7 +10,8 @@ from torch import nn
 from torch.nn import functional as F
 from Utility.Torch.Learnables import Layers
 from Utility.Torch.Models.Supertransformer.Layers import StreamTools
-
+from Utility.Torch.Models.Supertransformer.Layers import StorageTools
+from Utility.Torch.Models.Supertransformer.Layers.StreamTools import StreamTensor
 
 """
 
@@ -60,52 +61,18 @@ submodel, and check how far off from true the particular example is.
 
 """
 
-def make_SuperEnsemble(total_submodels: int,
-                       memory_shape: List[int],
-                       base_model: List[nn.Module],
-                       memory_dtype: torch.dtype = torch.float32,
-                       copy_layers: bool = True,
-                       reinitialize_layers: bool = True) -> SuperEnsemble:
+class tensorstorage(nn.Module):
     """
-
-    :param total_submodels: How many submodels to create.
-    :param memory_shape: The shape of the memory starts.
-    :param base_model: A list of layers, representing the sequential layers to be called in
-        the model.
-    :param memory_dtype: The dtype of the memory. Should be same as data stream
-    :param copy_layers: Whether or not to create indepedent layers for each submodel
-    :param reinitialize_layers: If making independent layers, whether to attempt to reinitialize
-        each layers parameter. Will look for, and call, reset_parameters where it can find it
-    :return: A new SuperEnsemble model
+    Tensor storage as a module
     """
+    def __getitem__(self, item):
+        return getattr(self, item)
+    def __init__(self, tensors: Dict[str, torch.Tensor]):
+        super().__init__()
+        for name, tensor in tensors:
+            assert hasattr(self, name) is False
+            self.register_buffer(name, tensor)
 
-    #This loop creates the copies of the submodel, and memory starts, needed
-    #to start the SuperEnsemble.
-    submodels = []
-    memstarts = []
-    for _ in range(total_submodels):
-        #Handle submodel layer creation
-        if copy_layers is False:
-            submodel = base_model
-        else:
-            submodel = copy.deepcopy(base_model)
-
-            if reinitialize_layers is True:
-                #Reinitialize all parameters that are possible, recursively
-                for sublayer in submodel:
-                    for microlayer in sublayer.modules():
-                        if hasattr(microlayer,  'reset_parameters'):
-                            microlayer.reset_parameters()
-
-        #Handle submodel creation, memstart creation, and storage.
-        submodel = SubModel(submodel)
-        memstart = MemSeed(memory_shape, memory_dtype)
-        submodels.append(submodel)
-        memstarts.append(memstart)
-
-    #With everything created, we create the superensemble and return
-
-    return SuperEnsemble(submodels, memstarts)
 
 class AbstractSubModel(nn.Module):
     """
@@ -122,10 +89,13 @@ class AbstractSubModel(nn.Module):
         super().__init__()
     def forward(self,
                 input_stream: StreamTools.StreamTensor,
-                residuals_stream: Optional[List[StreamTools.StreamTensor]] = None,
+                residuals_stream: List[StreamTools.StreamTensor],
                 auxiliary_stream: Optional[StreamTools.StreamTensor] = None)\
             -> Tuple[StreamTools.StreamTensor, List[StreamTools.StreamTensor]]:
         raise NotImplementedError("Must impliment forward in AbstractSubModel")
+
+
+
 
 class ReducingSubModel(AbstractSubModel):
     """
@@ -141,7 +111,7 @@ class ReducingSubModel(AbstractSubModel):
 
     def forward(self,
                 input_stream: StreamTools.StreamTensor,
-                residuals_stream: Optional[List[StreamTools.StreamTensor]] = None,
+                residuals_stream: List[StreamTools.StreamTensor],
                 auxiliary_stream: Optional[StreamTools.StreamTensor] = None,
                 )\
             -> Tuple[StreamTools.StreamTensor, List[StreamTools.StreamTensor]]:
@@ -149,12 +119,11 @@ class ReducingSubModel(AbstractSubModel):
         new_residuals: List[StreamTools.StreamTensor] = []
         stream = input_stream
         for i, layer in enumerate(self._layers):
-            if residuals_stream is not None:
-                residual = residuals_stream[i]
-                merger = StreamTools.StreamMerger([stream, residual])
-                merger.stream.reduce_mode(self._mode)
-                merger.losses.sum()
-                stream = merger.build()
+            residual = residuals_stream[i]
+            merger = StreamTools.StreamMerger([stream, residual])
+            merger.stream.reduce_mode(self._mode)
+            merger.losses.sum()
+            stream = merger.build()
             stream = layer(stream)
             new_residuals.append(stream)
         final_stream = stream
@@ -180,7 +149,7 @@ class ConcatSubModel(AbstractSubModel):
         self._zeros = StreamTools.StreamTensor({key: [value] for (key, value) in defaults})
     def forward(self,
                 input_stream: StreamTools.StreamTensor,
-                residuals_stream: Optional[List[StreamTools.StreamTensor]] = None,
+                residuals_stream: List[StreamTools.StreamTensor] = None,
                 auxiliary_stream: Optional[StreamTools.StreamTensor] = None,
                 )\
             -> Tuple[StreamTools.StreamTensor, List[StreamTools.StreamTensor]]:
@@ -193,15 +162,7 @@ class ConcatSubModel(AbstractSubModel):
         new_residuals = []
         stream = input_stream
         for i, layer in enumerate(self._layers):
-            if residuals_stream is not None:
-                residual = residuals_stream[i]
-            else:
-                stream_data = {}
-                for name, length in self._defaults:
-                    shape = list(stream.stream[name].shape[:-1]) + [length]
-                    tensor = torch.zeros(shape)
-                    stream_data[name] = tensor
-                residual = StreamTools.StreamTensor(stream_data)
+            residual = residuals_stream[i]
             merger = StreamTools.StreamMerger([stream, residual])
             merger.stream.concat(dim=-1)
             merger.losses.sum()
@@ -216,17 +177,79 @@ class AbstractEnsembleStartup(nn.Module):
     """
     A class responsible for taking an incoming ensemble
     stream or group, and creating a new stream for the
-    individual subinstance
+    individual subinstance. This is abstract, and merely
+    defines the correct implimentation.
     """
     def __init__(self):
         super().__init__()
 
     def forward(self,
                 input_stream: StreamTools.StreamTensor,
-                recursive_stream: Optional[StreamTools.StreamTensor] = None,
+                ensemble_stream: Optional[StreamTools.StreamTensor] = None,
                 auxiliary_stream: Optional[StreamTools.StreamTensor] = None)\
         -> StreamTools.StreamTensor:
         raise NotImplementedError("Must impliment forward in EnsembleStartup")
+
+class ConcatStartup(AbstractEnsembleStartup):
+    """
+    A class to build a functioning startup sequence based
+    on the assumption that we should be building
+    by concatenation. Contains a long term memory
+    seed which is concatenated to the input each time
+    """
+    def __init__(self, mem_seed: StreamTensor):
+        super().__init__()
+        self.seeds = StorageTools.DictTensorStorage(mem_seed.stream)
+        self._cache = StreamTensor
+    def forward(self,
+                input_stream: StreamTools.StreamTensor,
+                ensemble_stream: Optional[StreamTools.StreamTensor] = None,
+                auxiliary_stream: Optional[StreamTools.StreamTensor] = None) -> StreamTools.StreamTensor:
+        seeds = dict(self.seeds)
+        seeds = {name: value() for name, value in seeds.items()}
+        seeds = StreamTensor(seeds)
+
+        if ensemble_stream is None:
+            ensemble_stream = StreamTensor()
+
+        merger = StreamTools.StreamMerger([input_stream, ensemble_stream, seeds])
+        merger.stream.concat(dim=-1)
+        merger.losses.sum()
+        output_stream = merger.build()
+
+        return output_stream
+
+class ReductionStartup(AbstractEnsembleStartup):
+    """
+    A startup class, this is responsible for
+    starting the direct tensor flow through
+    the ensemble. This flavor performs
+    reductive combination, adding tensors of the same
+    shape together.
+    """
+    def __init__(self, mem_seed: StreamTensor, mode: str):
+        super().__init__()
+        self.seeds = StorageTools.DictTensorStorage(mem_seed.stream)
+        self._cache = StreamTensor
+        self._mode = mode
+
+    def forward(self,
+                input_stream: StreamTools.StreamTensor,
+                ensemble_stream: Optional[StreamTools.StreamTensor] = None,
+                auxiliary_stream: Optional[StreamTools.StreamTensor] = None) -> StreamTools.StreamTensor:
+        seeds = dict(self.seeds)
+        seeds = {name: value() for name, value in seeds.items()}
+        seeds = StreamTensor(seeds)
+
+        if ensemble_stream is None:
+            ensemble_stream = StreamTensor()
+
+        merger = StreamTools.StreamMerger([input_stream, ensemble_stream, seeds])
+        merger.stream.reduce_mode(self._mode)
+        merger.losses.sum()
+        output_stream = merger.build()
+
+        return output_stream
 
 class AbstractEnsembleTeardown(nn.Module):
     """
@@ -248,14 +271,26 @@ class AbstractEnsembleTeardown(nn.Module):
                 ensemble_stream: StreamTools.StreamTensor,
                 cumulative_stream: Optional[StreamTools.StreamTensor] = None,
                 auxiliary_stream: Optional[StreamTools.StreamTensor] = None) \
-            -> StreamTools.StreamTensor:
+            -> Tuple[StreamTensor, StreamTensor]:
+        """
+
+        :param ensemble_stream: The current stream from the current instance
+        :param cumulative_stream: The cumulative stream. From the previous iteration.
+        :param auxiliary_stream: Anything from the auxiliary stream
+        :return: Two items. First, the cumulative stream tensor. Second, the task streamtensor.
+        """
         raise NotImplementedError("Must impliment forward function in EnsembleTeardown")
 
-class SuperEnsemble(nn.Module):
-    """
-    A model consisting of a collection of submodels which are residually
-    interconnected.
-    """
+class AbstractResStartup(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self,
+                res_stream: Optional[List[StreamTensor]],
+                auxiliary_stream: Optional[List[StreamTensor]]
+                ) -> List[StreamTensor]:
+        raise NotImplementedError()
+
+class
 
 
 class SuperEnsemble(nn.Module):
@@ -268,53 +303,79 @@ class SuperEnsemble(nn.Module):
     """
 
     def __init__(self,
-                 stream_submodels: List[nn.Module],
-                 task_seeds: List[MemSeed],
+                 Start: List[AbstractEnsembleStartup],
+                 ResStart: List[AbstractResStartup],
+                 TearDown: List[AbstractEnsembleTeardown],
+                 SubModels: List[AbstractSubModel],
                  ):
-        """
-        :param task_seeds: A list of memory task seeds, one per submodel
-        :param stream_submodels: A list of submodels.
-        """
+
 
         super().__init__()
 
-        self._memory_seeds = nn.ModuleList(task_seeds)
-        self._submodels = nn.ModuleList(stream_submodels)
+        self.starters = Start
+        self.res = ResStart
+        self.teardown = TearDown
+        self.submodels = SubModels
 
     def forward(self,
-                data_stream: torch.Tensor,
-                tensor_residuals: Optional[List[torch.Tensor]] = None,
-                task_residuals: Optional[List[torch.Tensor]] = None,
-                task_augments: Optional[List[torch.Tensor]] = None) \
-            -> Tuple[Tuple[List[torch.Tensor], List[torch.Tensor]], Tuple[List[torch.Tensor], List[torch.Tensor]]]:
+                input_stream: StreamTensor,
+                residuals_stream: Optional[List[StreamTensor]],
+                ensemble_streams: Optional[List[StreamTensor]],
+                auxiliary_stream: Optional[StreamTensor])\
+            -> Tuple[StreamTensor, List[StreamTensor], List[StreamTensor]]:
 
         """
 
-
-        :param data_stream: The incoming primary data to process
-        :param task_residuals: Any prior residuals along the memory stream, presumably task related
-        :param tensor_residuals: Any prior tensor residuals to include
-        :param task_augments: Anything to inject right after the memory seeds.
-        :return:
+        :param input_stream: The input to the model
+        :param residuals_stream: Any prior residuals generated to incorporate
+        :param ensemble_stream: Any prior per task information or conditioning to incoporate.
+        :param auxiliary_stream: A place to put information that will be fed to each submodel.
+        :return: A stream tensor, the output. A List of StreamTensors,
+            one per submodel task recursive information. A list of StreamTensors, consisting
+            of residual information.
         """
-        tensor_residuals = tensor_residuals
-        memory_residuals = task_residuals
-        tensor_outputs: List[torch.Tensor] = []
-        memory_outputs: List[torch.Tensor] = []
+        #Strip out stream losses, metrics. Put them in null stream, to merge into the output later.
+        null_stream = input_stream.keeponly([]) #Only keeps metrics, losses.
+        input_stream = input_stream.branch(input_stream.names)
 
-        counter = 0
-        for layer, seed in zip(self._submodels, self._memory_seeds):
-            #Fetch memory. Augment seed.
-            memory = seed()
+        #Preprocess, start tensors for ensemble
+        if ensemble_streams is not None:
+            iterate = zip(ensemble_streams, self.starters)
+            stream = [start(input_stream, ensemble_stream, auxiliary_stream) for ensemble_stream, start in iterate]
+        else:
+            stream = [start(input_stream, None, auxiliary_stream) for start in self.starters]
 
-            if task_augments is not None:
-                #Insert the augment stream if available.
-                memory = memory + task_augments[counter]
-                counter += 1
+        if residuals_stream is not None:
+            iterate = zip(residuals_stream, self.res)
+            residuals = [res_start(residual, auxiliary_stream) for residual, res_start in iterate]
+        else:
+            residuals = [res_start(None, auxiliary_stream) for res_start in self.res]
 
-            outcome = layer(data_stream, memory, tensor_residuals, memory_residuals)
-            tensor, memory, tensor_residuals, memory_residuals = outcome
-            tensor_outputs.append(tensor)
-            memory_outputs.append(memory)
-        return (tensor_outputs, memory_outputs), (tensor_residuals, memory_residuals)
+        #Perform submodel ensemble processing
+        outputs: List[StreamTensor] = []
+        for substream, submodel in zip(stream, self.submodels):
+            output, residuals = submodel(substream, auxiliary_stream)
+            outputs.append(output)
+
+        #collapse the accumulated ensemble
+        ensemble_items: List[StreamTensor] = []
+        cumulative: Optional[StreamTensor] = None
+        for output, final in zip(outputs, self.teardown):
+            cumulative, ensemble_item = final(output, cumulative, auxiliary_stream)
+            ensemble_items.append(ensemble_item)
+
+        #Integrate metrics, losses back into stream.
+        merging = StreamTools.StreamMerger([cumulative, null_stream])
+        merging.losses.sum()
+        merging.stream.sum()
+        output = merging.build()
+
+        #Return
+        return output, residuals, ensemble_items
+
+
+
+
+
+
 
