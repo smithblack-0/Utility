@@ -15,8 +15,8 @@ from typing import List, Optional, Union, Tuple, Dict
 
 import torch
 from torch import nn
-from Utility.Torch.Models.Supertransformer.Layers import StreamTools
-from Utility.Torch.Models.Supertransformer.Layers.StreamTools import StreamTensor
+from Utility.Torch.Models.Supertransformer import StreamTools
+from Utility.Torch.Models.Supertransformer.StreamTools import StreamTensor
 
 class TensorStorageItem(nn.Module):
     def __init__(self, tensor: torch.Tensor):

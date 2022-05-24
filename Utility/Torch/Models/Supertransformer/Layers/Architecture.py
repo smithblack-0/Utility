@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from Utility.Torch.Learnables import Layers
-from Utility.Torch.Models.Supertransformer.Layers import StreamTools
+from Utility.Torch.Models.Supertransformer import StreamTools
 
 
 class Bypass(nn.Module):

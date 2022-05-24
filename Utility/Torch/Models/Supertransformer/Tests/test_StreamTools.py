@@ -9,7 +9,8 @@ from typing import Dict
 import torch
 import unittest
 
-from Utility.Torch.Models.Supertransformer.Layers import StreamTools
+from Utility.Torch.Models.Supertransformer import StreamTools
+
 
 class test_stream_tensor(unittest.TestCase):
     """

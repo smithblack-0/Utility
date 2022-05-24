@@ -1,10 +1,4 @@
-"""
 
-Layers responsible for exchanging information between task and data streams
-live here. Options include data to task only, task to data only, and
-residual exchange prepwork.
-
-"""
 from __future__ import annotations
 from typing import List, Optional, Union, Tuple, Dict, NamedTuple, Any
 from collections import namedtuple
@@ -30,17 +24,6 @@ A stream consists of a collection of tensors, losses, and metrics which
 travel together throughout a model. Generally, there exists a primary stream,
 and a sequence of alternative streams.
 """
-
-class StreamStorage(nn.Module):
-    """
-    A savable module. Contains one important function,
-    to stream, which will reconstruct the stream that was
-    used to make it.
-    """
-
-
-    def __init__(self, stream: StreamTensor):
-        super().__init__()
 
 
 

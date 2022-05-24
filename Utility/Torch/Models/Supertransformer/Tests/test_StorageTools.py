@@ -4,7 +4,8 @@ from typing import List
 import torch
 from torch import nn
 from Utility.Torch.Models.Supertransformer.Layers import EnsembleTools as Ensemble
-from Utility.Torch.Models.Supertransformer.Layers import StorageTools
+from Utility.Torch.Models.Supertransformer import StorageTools
+
 
 class test_DictTensorStorage(unittest.TestCase):
     def test_basics(self):
