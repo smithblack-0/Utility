@@ -24,6 +24,22 @@ A stream consists of a collection of tensors, losses, and metrics which
 travel together throughout a model. Generally, there exists a primary stream,
 and a sequence of alternative streams.
 """
+class _CollectionManager():
+    pass
+
+class _TensorManager():
+    pass
+
+class _StreamTensor():
+    @property
+    def names(self):
+        return list(self._stream.keys())
+    def __getitem__(self, item):
+        if item in self.names:
+            return
+    def __init__(self):
+        self.tensor_items: Dict[str, torch.Tensor] = {}
+        self.collection_items: Dict[str, List[torch.Tensor]] = {}
 
 
 
@@ -55,13 +71,30 @@ class StreamTensor():
     @property
     def residuals(self):
         return self._residuals
-    def clone(self)-> StreamTensor:
+    def clone(self, include_stream: bool =True,
+              include_losses: bool=True,
+              include_metrics: bool=True,
+              include_collections: bool = True)-> StreamTensor:
         """
         Creates a structually independent clone of the stream
         :return: A clone of the dictionary, with the dictionary itself being independent, but
         the entries being the same. Modifying the data structure does not modify the original
         """
-        return StreamTensor(self._stream, self._losses, self._metrics, self._residuals)
+
+        stream = None
+        losses = None
+        metrics = None
+        collections = None
+
+
+
+        if include_losses and include_metrics:
+            return StreamTensor(self._stream, self._losses, self._metrics, self._residuals)
+        if include_losses:
+            return StreamTensor(self._stream, self._losses, None, None)
+        if include_metrics:
+            return StreamTensor(self._stream, None, None, None)
+        return StreamTensor(self._stream, None, None, None)
     #Element manipulation
     def isolate(self, names: List[str]) -> List[torch.Tensor]:
         """
@@ -77,7 +110,16 @@ class StreamTensor():
             assert name in self._stream, "name not found in stream"
             output.append(self._stream[name])
         return output
+    def set(self, name: str, value: torch.Tensor) -> StreamTensor:
+        """
+        Sets a particular channel to be a particular value.
+        Returns a new streamtensor, keeping current
+        losses and such
 
+        :param name: The string for the name
+        :param value: The
+        :return:
+        """
     #Stream modification functions
     def branch(self, names: List[str]) -> StreamTensor:
         """
@@ -176,14 +218,25 @@ class StreamTensor():
             output_collection.append(streamtensor)
 
         return output_collection
-    def to_module(self):
-        """ Produces a savable module capable of remaking this stream"""
 
+    def __getitem__(self, item: str) -> torch.Tensor:
+        return self.stream[item]
+    def __repr__(self):
+        stream_dict = {name: str(value.shape)  for name, value in self.stream.items()}
+
+        rep = '< StreamTensor |'
+        rep = rep + 'Streams : %s' % stream_dict
+        rep = rep + '| Losses %s' % self.losses.keys()
+        rep = rep + '| Metrics %s' % self.metrics.keys()
+        rep = rep + '>'
+        return str(rep)
+    def __contains__(self, item):
+        return item in self.stream
     def __init__(self,
                  stream: Optional[Dict[str, torch.Tensor]] = None,
                  losses: Optional[Dict[str, torch.Tensor]] = None,
                  metrics: Optional[Dict[str, List[torch.Tensor]]] = None,
-                 residuals: Optional[Dict[str, List[torch.Tensor]]] = None):
+                 collections: Optional[Dict[str, List[torch.Tensor]]] = None, ):
 
         if stream is None:
             stream = {}
@@ -195,10 +248,10 @@ class StreamTensor():
             update = metrics
             torch.jit.annotate(Dict[str, List[torch.Tensor]], update)
 
-        if residuals is None:
+        if collections is None:
             update2: Dict[str, List[torch.Tensor]] = {}
         else:
-            update2 = residuals
+            update2 = collections
             torch.jit.annotate(Dict[str, List[torch.Tensor]], update2)
 
         self._stream = stream
@@ -209,7 +262,6 @@ class StreamTensor():
 
 ## Stream Merging and Helpers ###
 
-@torch.jit.script
 class _MergeHelper():
     """
     A helper class. A holder for the functions which can be
@@ -331,7 +383,10 @@ class _MergeHelper():
         self.final = final
         self.reduced = True
     def reduce_mode(self, directive: str):
-        """ Allows a string to indicate reduction type"""
+        """ Allows a string to indicate reduction type
+
+        Allowed options are "sum", "mean", "min", "max", "median", and "first"
+        """
         assert directive in ("sum", "mean", "min", "max", "median", "first")
         if directive == "sum":
             self.sum()
@@ -400,23 +455,11 @@ class StreamMerger():
         return self._losses.initial
 
     @property
-    def stream(self)-> Union[
-        Dict[str, torch.Tensor],
-        _MergeHelper
-    ]:
-        if self._stream.reduced is not True:
-            return self._stream
-        else:
-            return self._stream.final
+    def stream(self)-> _MergeHelper:
+        return self._stream
     @property
-    def losses(self)-> Union[
-        Dict[str, torch.Tensor],
-        _MergeHelper
-    ]:
-        if self._losses.reduced is not True:
-            return self._losses
-        else:
-            return self._losses.final
+    def losses(self)-> _MergeHelper:
+        return self._losses
     @property
     def metrics(self):
         return self._metrics

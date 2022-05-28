@@ -5,18 +5,16 @@ A place to experiment
 """
 import torch
 from torch import nn
+from collections import namedtuple
 
-dim = 4
-vector = torch.ones([4])
-matrix = torch.randn([dim, dim])
-orthogonal = torch.nn.init.orthogonal_(matrix)
+items = zip(['1', '2,', '3'], [1, 2, 3])
+testerclass = namedtuple('tester', ['x', 'y', 'z'])
+print(testerclass)
+testerinstance = testerclass(x=11, y=22, z=30)
+print(testerinstance)
+for item in testerinstance:
+    print(item)
 
-item = torch.matmul(orthogonal, vector)
-item[0] = 0
-item2 = torch.matmul(orthogonal.transpose(-1, -2), item)
-print(matrix)
-print(orthogonal)
-
-print(vector)
-print(item)
-print(item2)
+new_instance = testerinstance._replace(x = 10)
+print(new_instance)
+print(new_instance._fields)

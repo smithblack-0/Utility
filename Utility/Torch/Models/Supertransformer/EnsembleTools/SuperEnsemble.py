@@ -8,7 +8,7 @@ from Utility.Torch.Models.Supertransformer.StreamTools import StreamTensor
 from Utility.Torch.Models.Supertransformer.EnsembleTools.ResStartup import AbstractResStartup
 from Utility.Torch.Models.Supertransformer.EnsembleTools.Startup import AbstractEnsembleStartup
 from Utility.Torch.Models.Supertransformer.EnsembleTools.SubModels import AbstractSubModel
-from Utility.Torch.Models.Supertransformer.EnsembleTools.TearDown import AbstractEnsembleTeardown
+from Utility.Torch.Models.Supertransformer.EnsembleTools.Teardown import AbstractPredictor
 
 
 class SuperEnsemble(nn.Module):
@@ -23,7 +23,7 @@ class SuperEnsemble(nn.Module):
     def __init__(self,
                  Start: List[AbstractEnsembleStartup],
                  ResStart: List[AbstractResStartup],
-                 TearDown: List[AbstractEnsembleTeardown],
+                 TearDown: List[AbstractPredictor],
                  SubModels: List[AbstractSubModel],
                  ):
 

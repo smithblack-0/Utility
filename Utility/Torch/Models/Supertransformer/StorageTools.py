@@ -19,17 +19,17 @@ from Utility.Torch.Models.Supertransformer import StreamTools
 from Utility.Torch.Models.Supertransformer.StreamTools import StreamTensor
 
 class TensorStorageItem(nn.Module):
-    def __init__(self, tensor: torch.Tensor):
+    def __init__(self, tensor: torch.Tensor, requires_grad=False):
         super().__init__()
-        self.register_buffer('item', tensor)
+        self.item = nn.Parameter(tensor, requires_grad=requires_grad)
     def forward(self):
         return self.item
 
 
-def DictTensorStorage(tensors: Dict[str, torch.Tensor]):
+def DictTensorStorage(tensors: Dict[str, torch.Tensor], requires_grad=False):
 
     #Store
     storage = nn.ModuleDict()
     for name in tensors:
-        storage[name] = TensorStorageItem(tensors[name])
+        storage[name] = TensorStorageItem(tensors[name], requires_grad)
     return storage
