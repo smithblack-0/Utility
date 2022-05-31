@@ -3,18 +3,53 @@ A place to experiment
 
 
 """
-import torch
-from torch import nn
-from collections import namedtuple
+from __future__ import annotations
 
-items = zip(['1', '2,', '3'], [1, 2, 3])
-testerclass = namedtuple('tester', ['x', 'y', 'z'])
-print(testerclass)
-testerinstance = testerclass(x=11, y=22, z=30)
-print(testerinstance)
-for item in testerinstance:
-    print(item)
+import builtins
+import os
+from functools import partial
 
-new_instance = testerinstance._replace(x = 10)
-print(new_instance)
-print(new_instance._fields)
+import treetensor.torch as torch
+import torch as normal
+
+print = partial(builtins.print, sep=os.linesep)
+
+if __name__ == '__main__':
+    # create a tree tensor
+    t = torch.randn({'a': (2, 3), 'b': {'x': (3, 4)}})
+    print(t)
+    print(torch.randn(4, 5))  # create a normal tensor
+    print()
+    print(t.a)
+
+    # structure of tree
+    print('Structure of tree')
+    print('t.a:', t.a)  # t.a is a native tensor
+    print('t.b:', t.b)  # t.b is a tree tensor
+    print('t.b.x', t.b.x)  # t.b.x is a native tensor
+    print()
+
+    # math calculations
+    print('Math calculation')
+    print('t ** 2:', t ** 2)
+    print('torch.sin(t).cos()', torch.sin(t).cos())
+    print()
+
+    # backward calculation
+    print('Backward calculation')
+    t.requires_grad_(True)
+    t.std().arctan().backward()
+    print('grad of t:', t.grad)
+    print()
+
+    # native operation
+    # all the ops can be used as the original usage of `torch`
+    print('Native operation')
+    print('torch.sin(t.a)', torch.sin(t.a))  # sin of native tensor
+
+    @normal.jit.script
+    def retrieve(tensor: torch.Tensor):
+        a = tensor.a
+        return a
+
+    retrieved = retrieve(t)

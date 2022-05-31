@@ -41,7 +41,6 @@ class AbstractEnsembleStartup(nn.Module):
         super().__init__()
 
     def forward(self,
-                input_stream: NamedTuple,
                 input_stream: StreamTools.StreamTensor,
                 ensemble_stream: Optional[StreamTools.StreamTensor] = None,
                 recursive_stream: Optional[StreamTools.StreamTensor] = None,
@@ -77,7 +76,7 @@ class ConcatStartup(AbstractEnsembleStartup):
                 input_stream: Optional[StreamTensor] = None,
                 ensemble_stream: Optional[StreamTensor] = None,
                 recursive_stream: Optional[StreamTensor] = None,
-                auxiliary_stream: Optional[NamedTuple] = None) -> StreamTensor:
+                auxiliary_stream: Optional[StreamTensor] = None) -> StreamTensor:
 
         seeds = {name: value().clone() for name, value in self.seeds.items()}
         seeds = StreamTensor(seeds)

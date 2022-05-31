@@ -9,8 +9,24 @@ from typing import Dict
 import torch
 import unittest
 
+import Utility.Torch.Models.Supertransformer.StreamTools2
 from Utility.Torch.Models.Supertransformer import StreamTools
 
+
+
+
+class test_streamtree(unittest.TestCase):
+    def test_basic(self):
+        streamtree = Utility.Torch.Models.Supertransformer.StreamTools2._StreamTensor('root')
+        streamtree = streamtree.set({'test' : torch.randn(10)})
+        print(streamtree.test)
+        def operator(input: Utility.Torch.Models.Supertransformer.StreamTools2._StreamTensor):
+            update = input.test.tensor + 5
+            output = input.set({'test' : update})
+            return output
+
+        print(operator(streamtree))
+        compiled = torch.jit.script(operator)
 
 class test_stream_tensor(unittest.TestCase):
     """

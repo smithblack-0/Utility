@@ -11,6 +11,52 @@ from Utility.Torch.Models.Supertransformer.EnsembleTools.SubModels import Abstra
 from Utility.Torch.Models.Supertransformer.EnsembleTools.Teardown import AbstractPredictor
 
 
+class ProcessingGrid(nn.Module):
+    """
+    Contains a collection of processing units, and
+    starting values. Runs an update every time it
+    is called.
+    """
+
+    def __init__(self, units: List[List[AbstractProcessingUnit]]):
+        super().__init__()
+        final_list: List[nn.ModuleList] = []
+        for submodel in units:
+            final_list.append(nn.ModuleList(submodel))
+        self.module_grid = nn.ModuleList(final_list)
+        self.linear_grid = [[None] * len(final_list[0]) for _ in final_list]
+        self.orthogonal_grid = [[None] * len(final_list[0]) for _ in final_list]
+
+    def forward(self,
+                linear_input: List[Optional[torch.Tensor]],
+                orthogonal_input: List[Optional[torch.Tensor]]):
+
+        # Peform update propogation
+        self.linear_grid.insert(0, linear_input)
+        linear_output = self.linear_grid.pop()
+
+        self.orthogonal_grid.insert(0, orthogonal_input)
+        orthogonal_output = self.orthogonal_grid.pop()
+
+        # Work through the grid
+        for i, submodel in enumerate(self.module_grid):
+            for j, unit in enumerate(submodel):
+                linear = self.linear_grid[i][j]
+                orthogonal = self.orthogonal_grid[j][i]
+                if linear is not None and orthogonal is not None:
+                    assert linear.batch == orthogonal.batch
+                    assert linear.signals == orthogonal.signals
+                    outcome = unit(linear, orthogonal, signals)
+                    linear = outcome
+                    orthogonal = outcome
+                self.linear_grid[i][j] = linear
+                self.orthogonal_grid[j][i] = orthogonal
+
+        # Return the finished items
+        return linear_output, orthogonal_output
+
+
+
 class SuperEnsemble(nn.Module):
     """
 

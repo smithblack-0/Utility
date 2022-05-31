@@ -1,14 +1,9 @@
 
 from __future__ import annotations
-from typing import List, Optional, Union, Tuple, Dict, NamedTuple, Any
-from collections import namedtuple
 
-import numpy as np
+from typing import List, Optional, Union, Tuple, Dict
+
 import torch
-from torch import nn
-from torch.nn import functional as F
-from Utility.Torch.Learnables import Layers
-
 
 """
 
@@ -24,23 +19,295 @@ A stream consists of a collection of tensors, losses, and metrics which
 travel together throughout a model. Generally, there exists a primary stream,
 and a sequence of alternative streams.
 """
-class _CollectionManager():
-    pass
 
-class _TensorManager():
-    pass
+
+###### Traditional ######
+class _LeafCollection():
+    """
+    Entirely function. This is a collection
+    of tensors, and a leaf of a stream tree.
+    """
+    ##core functional update methods.
+
+    def clone(self, parent: _StreamTensor)-> _LeafCollection:
+        items: List[torch.Tensor] = []
+        for item in self._collection:
+            items.append(item.clone())
+        return _LeafCollection(parent, self.name, items)
+    def set_all(self, tensors: List[torch.Tensor]) -> _StreamTensor:
+        return self.parent.set({self.name : tensors})
+    def commit_reduce(self, tensor: torch.Tensor) -> _StreamTensor:
+        return self.parent.set({self.name : tensor})
+
+    #Editing methods. Completely functional. Attemts to set new
+    #instance to higher tree.
+
+    def set(self, index: int,  tensor: torch.Tensor) -> _StreamTensor:
+        new_tensors = self._collection.copy()
+        new_tensors[index] = tensor
+        return self.set_all(new_tensors)
+    def append(self, tensor: torch.Tensor)-> _StreamTensor:
+        tensors = self._collection.copy()
+        tensors.append(tensor)
+        return self.set_all(tensors)
+    def insert(self, index: int, value: torch.Tensor) -> _StreamTensor:
+        tensors = self._collection.copy()
+        tensors.insert(index, value)
+        return self.set_all(tensors)
+    def pop(self, index: Optional[int] = None) -> Tuple[torch.Tensor, _StreamTensor]:
+        tensors = self._collection.copy()
+        if index is None:
+            item = tensors.pop()
+        else:
+            item = tensors.pop(index)
+        return item, self.set_all(tensors)
+    #Retrieval.
+    def get(self, index: int, default: Optional[torch.Tensor] =None)-> torch.Tensor:
+        if len(self._collection) < index:
+            return default
+        return self._collection[index].clone()
+    def get_all(self)-> List[torch.Tensor]:
+        output = []
+        for item in self._collection:
+            output.append(item.clone())
+        return output
+    def __add__(self, other: Union[_LeafCollection, _LeafTensor])-> _StreamTensor:
+        tensors = self._collection.copy()
+        if isinstance(other, _LeafTensor):
+            tensors.append(other.tensor)
+        elif isinstance(other, _LeafCollection):
+            tensors = tensors + other.get_all()
+        else:
+            raise RuntimeError("Unknown type provided")
+        return self.set_all(tensors)
+    def __radd__(self, other: Union[_LeafCollection, _LeafTensor]) -> _StreamTensor:
+        tensors = self._collection.copy()
+        if isinstance(other, _LeafTensor):
+            tensors.insert(0, other.tensor)
+        elif isinstance(other, _LeafCollection):
+            tensors = other.get_all() + tensors
+        else:
+            raise RuntimeError("Unknown type provided")
+        return self.set_all(tensors)
+
+
+
+    #Magic
+    def __getitem__(self, item: int) -> torch.Tensor:
+        return self._collection[item].clone()
+    def __contains__(self, item) -> bool:
+        return item in self._collection
+    def __len__(self) -> int:
+        return len(self._collection)
+    def __iter__(self) -> List[torch.Tensor]:
+        return self._collection
+    def __eq__(self, other: _LeafCollection) -> bool:
+        if len(self) != len(other):
+            return False
+        for my_item, their_item in zip(self.__iter__(), other.__iter__()):
+            if not torch.all(my_item == their_item):
+                return False
+        return True
+
+    ### Reduction and conversion ###
+
+    def _reduce_broadcast(self, items: List[torch.Tensor])-> List[torch.Tensor]:
+        """ Attempts to broadcast items together such the shapes are common"""
+
+        # Figure out what the broadcast shape should be
+        target_shape: List[int] = []
+        source_location: int = 0
+        for i, item in enumerate(items):
+            if len(item.shape) > len(target_shape):
+                target_shape = list(item.shape)
+                source_location = i
+
+        #Validate broadcast. Explain issue if present
+        for i, item in enumerate(items):
+            required_shape = target_shape[-len(item.shape):]
+            current_shape = list(item.shape)
+            if required_shape != current_shape:
+                msg = "merge collection at location %s was not compatible with collection at %s" % (i, source_location)
+                raise ValueError(msg, required_shape, current_shape)
+
+        # Perform broadcast. Return
+        output: List[torch.Tensor] = []
+        for i, item in enumerate(items):
+            new_item = torch.broadcast_to(item, target_shape)
+            output.append(new_item)
+        return output
+    def _concat_broadcast(self,
+                         items: List[torch.Tensor],
+                         concat_dim: int = -1):
+        """ Broadcasts for concat. Ensures all dimensions but concat dim are same shape"""
+        assert concat_dim < 0, "For numerical reasons, concat_dim must be < 0"
+        broadcast_shape: List[int] = []
+        for item in items:
+            if len(item.shape) - 1 > len(broadcast_shape):
+                new_shape = list(item.shape)
+                new_shape.pop(concat_dim)
+                broadcast_shape = new_shape
+
+        output: List[torch.Tensor] = []
+        breakapart_dim = concat_dim % len(broadcast_shape) + 1
+
+        for item in items:
+            new_shape = broadcast_shape.copy()
+            prior_shape, post_shape = new_shape[:breakapart_dim], new_shape[breakapart_dim:]
+            prior_shape.append(item.shape[concat_dim])
+            new_shape = prior_shape + post_shape
+            new_item = torch.broadcast_to(item, new_shape)
+            output.append(new_item)
+        return output
+
+    def sum_reduce(self) -> _StreamTensor:
+        """ Attempts to sum up everything in the collection. Converts it to a tensor"""
+        broadcast = self._reduce_broadcast(self._collection)
+        items = torch.stack(broadcast, dim=0)
+        items = items.sum(dim=0)
+        return self.commit_reduce(items)
+    def mean_reduce(self) -> _StreamTensor:
+        """ Attempts to average up everything in the collection"""
+        broadcast = self._reduce_broadcast(self._collection)
+        items = torch.stack(broadcast, dim=0)
+        items = items.mean(dim=0)
+        return self.commit_reduce(items)
+    def max_reduce(self) -> _StreamTensor:
+        """ Attempts to find the max of everything in the collection"""
+
+        broadcast = self._reduce_broadcast(self._collection)
+        items = torch.stack(broadcast, dim=0)
+        items, _ = items.min(dim=0)
+        return self.commit_reduce(items)
+    def min_reduce(self) -> _StreamTensor:
+        """ Attempts to find the min of everything in the collection"""
+        broadcast = self._reduce_broadcast(self._collection)
+        items = torch.stack(broadcast, dim=0)
+        items, _ = items.max(dim=0)
+        return self.commit_reduce(items)
+    def median_reduce(self) -> _StreamTensor:
+        """ Attempts to find the median of everything in the collection"""
+        broadcast = self._reduce_broadcast(self._collection)
+        items = torch.stack(broadcast, dim=0)
+        items, _ = items.median(dim=0)
+        return self.commit_reduce(items)
+    def concat_reduce(self):
+        """ Attempts to concatenate together everything in the collection"""
+        broadcast = self._concat_broadcast(self._collection)
+        items = torch.concat(broadcast, dim=-1)
+        return self.commit_reduce(items)
+    def __init__(self,
+                 parent: _StreamTensor,
+                 name: str,
+                 collection: List[torch.Tensor]):
+        self.name = name
+        self._collection = collection
+        self.parent = parent
+
+
+class _LeafTensor():
+    """
+    The tensor class contains a tensor,
+    and allows manipulation of tensors
+    """
+
+
+    @property
+    def value(self)-> torch.Tensor:
+        return self.tensor
+    def set(self, tensor: torch.Tensor)-> _StreamTensor:
+        return self._parent.set({self.name: tensor})
+    def collection(self)-> _StreamTensor:
+        return self._parent.set({self.name : [self.value]})
+    def clone(self, parent: _StreamTensor)-> _LeafTensor:
+        return _LeafTensor(parent, self.name, self.tensor)
+    def __init__(self,
+                 parent: _StreamTensor,
+                 name: str,
+                 tensor: torch.Tensor):
+        self.name = name
+        self.tensor = tensor
+        self._parent = parent
 
 class _StreamTensor():
-    @property
-    def names(self):
-        return list(self._stream.keys())
-    def __getitem__(self, item):
-        if item in self.names:
-            return
-    def __init__(self):
-        self.tensor_items: Dict[str, torch.Tensor] = {}
-        self.collection_items: Dict[str, List[torch.Tensor]] = {}
+    """
+    A stream tensor designed to hold a lot of items elegantly
+    at once, and enable easy manipulation of such.
 
+    Acts as a node in a tree. The tree nodes may terminate in one
+    of two ways: as a single tensor, or a list of tensor. Attempting
+    to set the class with a particular name will create a node
+    of the appropriate type.
+    """
+    def __getattr__(self, item):
+        if item in self._names:
+            item = super().__getattribute__(item)
+
+
+    #Core functional items. Some things here are inplace. Nothing else is.
+    def clone(self,
+              exclude: Optional[List[str]] = None,
+              include: Optional[List[str]] = None,
+              parent: Optional[_StreamTensor] = None) -> _StreamTensor:
+        """
+        Create an independent clone of this and every node below it.
+        """
+        items = {name: getattr(self, name) for name in self._names}
+        final_items: Dict[str, Union[_StreamTensor, torch.Tensor, List[torch.Tensor]]] = {}
+        for name in items:
+            if exclude is not None and name in exclude:
+                continue
+            if include is not None and name not in include:
+                continue
+            item = items[name]
+            if isinstance(item, _StreamTensor):
+                final_items[name] = item
+            elif isinstance(item, _LeafCollection):
+                final_items[name] = item.get_all()
+            elif isinstance(item, _LeafTensor):
+                final_items[name] = item.tensor
+            else:
+                raise RuntimeError("Illegal state reached")
+        return _StreamTensor(self.name, items, parent)
+    def set(self, items: Dict[str, Union[torch.Tensor, List[torch.Tensor], _StreamTensor]]) -> \
+            _StreamTensor:
+        """
+        Sets the indicated entries in items to the appropriate values.
+        Then returns the entire rebuilt tree.
+        :param items: the items to set. May be tensors, a collection of tensors, or
+            even another streamtensor.
+        :return:
+        """
+        new_items = {name: getattr(self, name) for name in self._names}
+        for name, value in items.items():
+            new_items[name] = value
+        new_node = _StreamTensor(self.name, new_items)
+        if self.parent is None:
+            return new_node
+        else:
+            return self.parent.set({self.name : new_node})
+
+    def __init__(self,
+                 name: str,
+                 items: Optional[Dict[str, Union[torch.Tensor, List[torch.Tensor], _StreamTensor]]] = None):
+
+        if items is None:
+            final_items = {}
+        else:
+            final_items = items
+
+        self.name = name
+        self._names = []
+
+        for name, value in final_items.items():
+            if isinstance(value, torch.Tensor):
+                item = _LeafTensor(self, name, value)
+                setattr(self, name, item)
+            elif isinstance(value, list):
+                item = _LeafCollection(self, name, value)
+                setattr(self, name, item)
+            elif isinstance(value, _StreamTensor):
+                setattr(self, name, value.clone(parent = self))
 
 
 @torch.jit.script
@@ -110,16 +377,6 @@ class StreamTensor():
             assert name in self._stream, "name not found in stream"
             output.append(self._stream[name])
         return output
-    def set(self, name: str, value: torch.Tensor) -> StreamTensor:
-        """
-        Sets a particular channel to be a particular value.
-        Returns a new streamtensor, keeping current
-        losses and such
-
-        :param name: The string for the name
-        :param value: The
-        :return:
-        """
     #Stream modification functions
     def branch(self, names: List[str]) -> StreamTensor:
         """
@@ -230,8 +487,6 @@ class StreamTensor():
         rep = rep + '| Metrics %s' % self.metrics.keys()
         rep = rep + '>'
         return str(rep)
-    def __contains__(self, item):
-        return item in self.stream
     def __init__(self,
                  stream: Optional[Dict[str, torch.Tensor]] = None,
                  losses: Optional[Dict[str, torch.Tensor]] = None,

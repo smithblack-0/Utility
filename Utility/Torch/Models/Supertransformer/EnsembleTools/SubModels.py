@@ -1,7 +1,7 @@
 from typing import List, Optional, Tuple, Dict
 
-import torch
 from torch import nn
+import treetensor.torch as torch
 
 from Utility.Torch.Models.Supertransformer import StreamTools
 
