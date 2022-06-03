@@ -1,11 +1,14 @@
 import asyncio
 import unittest
 import torch
+import torchmetrics
+import seaborn
+import pandas
 
+from matplotlib import pyplot as plt
 from torch import nn
 from Utility.Torch.Learnables import Layers
-from Utility.Torch.Learnables import StreamComponents
-
+from Utility.Torch.Learnables import NIFCU
 
 class testLinear(unittest.TestCase):
     """
@@ -172,49 +175,111 @@ class testBandedAttn(unittest.TestCase):
         tester = torch.jit.script(tester)
         tester(query, key, value)
 
-class test_TCMHA(unittest.TestCase):
-    def test_construct(self):
-        item = StreamComponents.Interchange(64, 4, 3)
-    def test_attn(self):
+class test_NIFCU(unittest.TestCase):
+    """
+    This is the test case for the
+    NIFCU layer.
 
-        key1 = torch.randn([2, 128, 16])
-        key2 = torch.randn([2, 16, 16])
-        key3 = torch.randn([2, 64, 16])
+    """
+    show_graphs = False
+    def setUp(self):
+        defaults = {}
+        defaults['embedding_width'] = 512
+        defaults['memory_width'] = 20
+        defaults['integration_rate'] = [0.99, 0.97, 0.90, 0.8]
+        defaults['norm_decay_rate'] = [0.95, 0.90, 0.8, 0.7]
+        defaults['dropout'] = 0.1
+        defaults['grad_rate'] = 1
+        defaults['curiosity_clamp'] = 6.0
+        self.defaults = defaults
+    def test_constructor(self):
+        layer = NIFCU.NIFCU(**self.defaults)
+    def test_basic_forward(self):
+        tensor = torch.randn([10, 30, 512])
+        layer = NIFCU.NIFCU(**self.defaults)
+        output = layer(tensor)
+    def test_torchscript_forward(self):
+        tensor = torch.randn([10, 30, 512])
+        layer = NIFCU.NIFCU(**self.defaults)
+        layer = torch.jit.script(layer)
+        output = layer(tensor)
 
-        keybad = torch.randn([2, 20, 16])
+    def test_dev(self):
+        layernorm = nn.LayerNorm(512)
 
-        query = torch.randn([2, 64, 16])
+        inputs = layernorm(torch.randn([512, 1, 512])).detach()
+        all_labels = torch.range(0, 511, dtype=torch.long)
+        layer = NIFCU.NIFCU(**self.defaults)
+        final = nn.Linear(512, 512)
 
-        keys = [key1, key2, key3]
-        bad_keys = [key1, key2, keybad]
+        batches = 800
+        batch_size = 64
+        print(list(layer.parameters()))
+        optim = torch.optim.Adam(layer.parameters())
+        loss_func = nn.CrossEntropyLoss()
 
-        values = keys
-        bad_values = bad_keys
+        #Starting loss
 
+        prediction = layer(inputs)
+        prediction = final(prediction).squeeze()
+        loss = loss_func(prediction, all_labels)
 
-        StreamComponents.localized_component_attention(query, keys, values, 0)
-        StreamComponents.localized_component_attention(query, keys, values, 5)
-        StreamComponents.localized_component_attention(query, keys, values, 20)
-        StreamComponents.localized_component_attention(query, keys, values, 20, 4)
+        #Train
+        calibration_changes = []
+        activity_changes = []
+        accuracy = []
+        for i in range(batches):
+            optim.zero_grad()
+            pre_calibration = layer.CalibrationBuffer.clone().detach()
+            pre_activity = layer.activity.clone().detach()
 
-        def tester():
-            StreamComponents.localized_component_attention(query, bad_keys, bad_values, 5)
-        self.assertRaises(AssertionError, tester)
+            choice = torch.randint(0, 512, [batch_size])
+            labels = all_labels[choice]
+            batch = inputs[choice, :, :]
 
-        compiled = torch.jit.script(StreamComponents.localized_component_attention)
-    def test_forward(self):
+            prediction = layer(batch)
+            prediction = final(prediction).squeeze()
+            loss = loss_func(prediction, labels)
 
-        stream1 = torch.randn([2, 256, 40])
-        stream2 = torch.randn([2, 128, 40])
-        stream3 = torch.randn([2, 64, 40])
-        stream4 = torch.randn([2, 32, 40])
+            loss.backward()
+            optim.step()
 
-        stream = [stream1, stream2, stream3, stream4]
+            calibration_diff = pre_calibration-layer.CalibrationBuffer.clone().detach()
+            activity_diff = pre_activity - layer.activity.clone().detach()
 
-        item = StreamComponents.Interchange(40, 4, 3)
-        item(stream)
+            calibration_changes.append(calibration_diff.abs().mean(dim=-1))
+            activity_changes.append(activity_diff.abs())
+            accuracy.append(torchmetrics.functional.accuracy(prediction, labels))
+        #Eval
 
+        prediction = layer(inputs)
+        prediction = final(prediction).squeeze()
+        loss = loss_func(prediction, all_labels)
 
+        print(loss)
+        print(torchmetrics.functional.accuracy(prediction, all_labels))
+        print(list(layer.parameters()))
+
+        calibration_changes = torch.stack(calibration_changes).flatten(1, 2)
+        activity_changes = torch.stack(activity_changes).flatten(1,2)
+
+        calibration_names = ["calibration channel " + str(item) for item in range(calibration_changes.shape[-1])]
+        calibration_changes = dict(zip(calibration_names, calibration_changes.transpose(-1, -2)))
+
+        activity_name = ["activity_channel " + str(item) for item in range(activity_changes.shape[-1])]
+        activity_changes = dict(zip(activity_name, activity_changes.transpose(-1, -2)))
+
+        frame = pandas.DataFrame(calibration_changes)
+        plot = seaborn.lineplot(data=frame)
+        plt.show()
+
+        frame = pandas.DataFrame(activity_changes)
+        plot = seaborn.lineplot(data=frame)
+        plt.show()
+
+        frame = pandas.DataFrame({"accuracy" : torch.stack(accuracy)})
+        plot = seaborn.lineplot(data=frame)
+        plt.show()
 
 if __name__ == "__main__":
     unittest.main()
