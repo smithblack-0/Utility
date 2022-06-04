@@ -8,7 +8,7 @@ import pandas
 from matplotlib import pyplot as plt
 from torch import nn
 from Utility.Torch.Learnables import Layers
-from Utility.Torch.Learnables import NIFCU
+from Utility.Torch.Learnables import ContextTools
 
 class testLinear(unittest.TestCase):
     """
@@ -185,22 +185,21 @@ class test_NIFCU(unittest.TestCase):
     def setUp(self):
         defaults = {}
         defaults['embedding_width'] = 512
-        defaults['memory_width'] = 20
-        defaults['integration_rate'] = [0.99, 0.97, 0.90, 0.8]
-        defaults['norm_decay_rate'] = [0.95, 0.90, 0.8, 0.7]
-        defaults['dropout'] = 0.1
-        defaults['grad_rate'] = 1
-        defaults['curiosity_clamp'] = 6.0
+        defaults['memory_width'] = 6
+        defaults['heads'] = 4
+        defaults['integration_lr'] = 0.001
+        defaults['decay_rate'] = 0.999
+        defaults['dropout'] = 0.90
         self.defaults = defaults
     def test_constructor(self):
-        layer = NIFCU.NIFCU(**self.defaults)
+        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
     def test_basic_forward(self):
         tensor = torch.randn([10, 30, 512])
-        layer = NIFCU.NIFCU(**self.defaults)
+        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
         output = layer(tensor)
     def test_torchscript_forward(self):
         tensor = torch.randn([10, 30, 512])
-        layer = NIFCU.NIFCU(**self.defaults)
+        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
         layer = torch.jit.script(layer)
         output = layer(tensor)
 
@@ -208,14 +207,13 @@ class test_NIFCU(unittest.TestCase):
         layernorm = nn.LayerNorm(512)
 
         inputs = layernorm(torch.randn([512, 1, 512])).detach()
-        all_labels = torch.range(0, 511, dtype=torch.long)
-        layer = NIFCU.NIFCU(**self.defaults)
+        all_labels = torch.arange(0, 512, dtype=torch.long)
+        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
         final = nn.Linear(512, 512)
 
-        batches = 800
+        batches = 1600
         batch_size = 64
-        print(list(layer.parameters()))
-        optim = torch.optim.Adam(layer.parameters())
+        optim = torch.optim.Adam(layer.parameters(), lr=0.001)
         loss_func = nn.CrossEntropyLoss()
 
         #Starting loss
@@ -225,9 +223,10 @@ class test_NIFCU(unittest.TestCase):
         loss = loss_func(prediction, all_labels)
 
         #Train
-        calibration_changes = []
-        activity_changes = []
+        calibration = []
+        activity = []
         accuracy = []
+        key = []
         for i in range(batches):
             optim.zero_grad()
             pre_calibration = layer.CalibrationBuffer.clone().detach()
@@ -244,12 +243,27 @@ class test_NIFCU(unittest.TestCase):
             loss.backward()
             optim.step()
 
-            calibration_diff = pre_calibration-layer.CalibrationBuffer.clone().detach()
-            activity_diff = pre_activity - layer.activity.clone().detach()
 
-            calibration_changes.append(calibration_diff.abs().mean(dim=-1))
-            activity_changes.append(activity_diff.abs())
+            calibration.append(layer.CalibrationBuffer.abs().mean(dim=-1).clone().detach())
+            activity.append(layer.curiosity.abs().clone().detach())
+            key.append(layer.KeyParameters.abs().mean(dim=-1).clone().detach())
             accuracy.append(torchmetrics.functional.accuracy(prediction, labels))
+
+        for i in range(batches):
+
+            choice = torch.randint(0, 512, [batch_size])
+            labels = all_labels[choice]
+            batch = inputs[choice, :, :]
+
+            prediction = layer(batch)
+            prediction = final(prediction).squeeze()
+            loss = loss_func(prediction, labels)
+
+            calibration.append(layer.CalibrationBuffer.abs().mean(dim=-1).clone().detach())
+            activity.append(layer.curiosity.abs().clone().detach())
+            key.append(layer.KeyParameters.abs().mean(dim=-1).clone().detach())
+            accuracy.append(torchmetrics.functional.accuracy(prediction, labels))
+
         #Eval
 
         prediction = layer(inputs)
@@ -258,22 +272,39 @@ class test_NIFCU(unittest.TestCase):
 
         print(loss)
         print(torchmetrics.functional.accuracy(prediction, all_labels))
-        print(list(layer.parameters()))
 
-        calibration_changes = torch.stack(calibration_changes).flatten(1, 2)
-        activity_changes = torch.stack(activity_changes).flatten(1,2)
+        calibration = torch.stack(calibration).flatten(1, 2)
+        activity = torch.stack(activity).flatten(1,2)
+        key = torch.stack(key).flatten(1, 2)
+        cal_to_key_ratio = (calibration/key)
 
-        calibration_names = ["calibration channel " + str(item) for item in range(calibration_changes.shape[-1])]
-        calibration_changes = dict(zip(calibration_names, calibration_changes.transpose(-1, -2)))
 
-        activity_name = ["activity_channel " + str(item) for item in range(activity_changes.shape[-1])]
-        activity_changes = dict(zip(activity_name, activity_changes.transpose(-1, -2)))
+        calibration_names = ["calibration channel " + str(item) for item in range(calibration.shape[-1])]
+        calibration = dict(zip(calibration_names, calibration.transpose(-1, -2)))
 
-        frame = pandas.DataFrame(calibration_changes)
+        activity_name = ["activity_channel " + str(item) for item in range(activity.shape[-1])]
+        activity = dict(zip(activity_name, activity.transpose(-1, -2)))
+
+        key_names = ["key channel " + str(item) for item in range(key.shape[-1])]
+        key = dict(zip(key_names, key.transpose(-1, -2)))
+
+        cal_key_ratio_names = ["cal key " + str(item) for item in range(cal_to_key_ratio.shape[-1])]
+        cal_to_key_ratio = dict(zip(cal_key_ratio_names, cal_to_key_ratio.transpose(-1, -2)))
+
+
+        frame = pandas.DataFrame(calibration)
         plot = seaborn.lineplot(data=frame)
         plt.show()
 
-        frame = pandas.DataFrame(activity_changes)
+        frame = pandas.DataFrame(activity)
+        plot = seaborn.lineplot(data=frame)
+        plt.show()
+
+        frame = pandas.DataFrame(key)
+        plot = seaborn.lineplot(data=frame)
+        plt.show()
+
+        frame = pandas.DataFrame(cal_to_key_ratio)
         plot = seaborn.lineplot(data=frame)
         plt.show()
 
