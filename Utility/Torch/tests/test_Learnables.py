@@ -189,7 +189,7 @@ class test_NIFCU(unittest.TestCase):
         defaults['heads'] = 4
         defaults['integration_lr'] = 0.001
         defaults['decay_rate'] = 0.999
-        defaults['dropout'] = 0.90
+        defaults['dropout'] = 0.95
         self.defaults = defaults
     def test_constructor(self):
         layer = ContextTools.AutoCalibrationInjector(**self.defaults)
