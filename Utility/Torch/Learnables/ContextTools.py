@@ -55,12 +55,20 @@ class ParameterInjectionUnit(nn.Module):
     when. Second, the module must train the parameter
     blocks to provide useful context.
 
-    Generally, a high head count and softmax mode are
-    desirable. The mem width should provide some reasonable
-    choices, such as 10. Should a high head count not
-    be feasable, an alternative would be a low head count
-    with a much larger memory. Be aware, however, this
-    will increase the number of parameters in proportion.
+    The location of best effect for parameter injection
+    is within a model of some sort that is mapping many
+    inputs onto only a few results, at some point in
+    the logic of the process. This may exist in a
+    transformer unit, a imagenet flow, or even just
+    a standard dense network.
+
+    For high granulaty, a high head count and softmax mode
+    are desirable. In this case many options are considered
+    avaibable. For a case in which only a few options should
+    be allowed at each step, a low head count is recommmended.
+    Generally, it is recommended to start with a high head
+    count where possible; more heads does NOT slow the
+    model down.
     """
     def __init__(self,
                  embedding_width: int,
@@ -83,29 +91,59 @@ class ParameterInjectionUnit(nn.Module):
         self.QueryProj = Layers.Linear(embedding_width, [heads, head_channel_width])
         self.Key = nn.Parameter(key)
         self.Value = nn.Parameter(value)
-        self.Dropout = nn.Dropout(dropout)
         self.DeheadProj = Layers.Linear([heads, head_channel_width], embedding_width)
 
     def forward(self, tensor: torch.Tensor):
+        #tensor : (..., embedding_width)
 
         #Get key, value, and query prepped
 
-        query = self.QueryProj(tensor).transpose(-2, -3) #(..., head, items,  head_embedding)
+        query = self.QueryProj(tensor)#(..., head,  head_embedding)
         key = self.Key #(..., head, mem, head_embedding)
         value = self.Value #(..., head, mem, head_embedding)
 
         #Perform scoring and attention
 
-        logits = torch.matmul(query, key.transpose(-1, -2)) # (... head, items, mem)
+        logits = torch.matmul(query, key.transpose(-1, -2)) # (... head, mem)
 
         if self.mode == "softmax":
-            score = torch.softmax(logits, dim=-1) #(..., head, items, mem)
+            score = torch.softmax(logits, dim=-1) #(..., head, mem)
         elif self.mode == "sigmoid":
-            score = torch.sigmoid(logits) #(..., head, items, mem)
+            score = torch.sigmoid(logits) #(..., head, mem)
         else:
             raise ValueError("Invalid mode specified")
 
-        attn = torch.matmul(score, value)/torch.sqrt(torch.tensor(query.shape[-1])) #(..., head, items, mem)
-        output = self.DeheadProj(output.transpose(-2, -3))
+        attn = torch.matmul(score, value)/torch.sqrt(torch.tensor(query.shape[-1])) #(..., head, head_embed)
+        output = self.DeheadProj(attn)
 
         return output
+
+class ParameterInjectedFeedforwardUnit(nn.Module):
+    """
+    Parameter injection combined with feedforward. Allows
+    for the injection of possibly relevant context in a
+    higher dimension space, and decisions to be made based on
+    said context.
+    """
+    def __init__(self,
+                 embedding_width,
+                 mem_width: int = 10,
+                 internel_width: int = 2048,
+                 heads: int = 256,
+                 mode: str = "softmax"
+                 ):
+        super().__init__()
+
+        assert internel_width % heads == 0
+
+
+        self.ff_project = nn.Linear(embedding_width, internel_width)
+        self.PIU = ParameterInjectionUnit(internel_width, mem_width, heads, mode)
+        self.activation = nn.ReLU()
+        self.ff_collapse = nn.Linear(internel_width, embedding_width)
+    def forward(self, tensor: torch.Tensor):
+        tensor = self.ff_project(tensor)
+        tensor = self.PIU(tensor)
+        tensor = self.activation(tensor)
+        tensor = self.ff_collapse(tensor)
+        return tensor
