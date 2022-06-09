@@ -9,8 +9,8 @@ from collections import namedtuple
 import torch
 import unittest
 from torch import nn
-from Utility.Torch.Models.Supertransformer.EnsembleTools import Startup
-from Utility.Torch.Models.Supertransformer import StreamTools
+from Utility.Torch.Models.SupertransformerOld.EnsembleTools import Startup
+from Utility.Torch.Models.SupertransformerOld import StreamTools
 
 class testAbstract(unittest.TestCase):
     """

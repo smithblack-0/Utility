@@ -4,8 +4,8 @@ from typing import Optional, Tuple, NamedTuple, List
 import torch
 from torch import nn
 
-from Utility.Torch.Models.Supertransformer import StreamTools, StorageTools
-from Utility.Torch.Models.Supertransformer.StreamTools import StreamTensor
+from Utility.Torch.Models.SupertransformerOld import StreamTools, StorageTools
+from Utility.Torch.Models.SupertransformerOld.StreamTools import StreamTensor
 
 """
 

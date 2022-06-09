@@ -2,7 +2,7 @@ from typing import Optional, List
 
 from torch import nn
 
-from Utility.Torch.Models.Supertransformer.StreamTools import StreamTensor
+from Utility.Torch.Models.SupertransformerOld.StreamTools import StreamTensor
 
 
 class AbstractResStartup(nn.Module):

@@ -3,8 +3,8 @@ from typing import List
 
 import torch
 from torch import nn
-from Utility.Torch.Models.Supertransformer.Layers import EnsembleTools as Ensemble
-from Utility.Torch.Models.Supertransformer import StorageTools
+from Utility.Torch.Models.SupertransformerOld.Layers import EnsembleTools as Ensemble
+from Utility.Torch.Models.SupertransformerOld import StorageTools
 
 
 class test_DictTensorStorage(unittest.TestCase):

@@ -2,13 +2,13 @@ from typing import List, Optional, Tuple
 
 from torch import nn
 
-from Utility.Torch.Models.Supertransformer import StreamTools
-from Utility.Torch.Models.Supertransformer.StreamTools import StreamTensor
+from Utility.Torch.Models.SupertransformerOld import StreamTools
+from Utility.Torch.Models.SupertransformerOld.StreamTools import StreamTensor
 
-from Utility.Torch.Models.Supertransformer.EnsembleTools.ResStartup import AbstractResStartup
-from Utility.Torch.Models.Supertransformer.EnsembleTools.Startup import AbstractEnsembleStartup
-from Utility.Torch.Models.Supertransformer.EnsembleTools.SubModels import AbstractSubModel
-from Utility.Torch.Models.Supertransformer.EnsembleTools.Teardown import AbstractPredictor
+from Utility.Torch.Models.SupertransformerOld.EnsembleTools.ResStartup import AbstractResStartup
+from Utility.Torch.Models.SupertransformerOld.EnsembleTools.Startup import AbstractEnsembleStartup
+from Utility.Torch.Models.SupertransformerOld.EnsembleTools.SubModels import AbstractSubModel
+from Utility.Torch.Models.SupertransformerOld.EnsembleTools.Teardown import AbstractPredictor
 
 
 class ProcessingGrid(nn.Module):

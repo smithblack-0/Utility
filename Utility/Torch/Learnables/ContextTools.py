@@ -39,9 +39,9 @@ from torch.distributed.optim import _FunctionalAdam
 
 
 
-class ParameterInjectionUnit(nn.Module):
+class ParameterInjectionSummaryUnit(nn.Module):
     """
-    Parameter Injection Unit.
+    Parameter Injection Summary Unit.
 
     Parameter Memory are large blocks of parameters
     which are compatible with an embedded stream
@@ -118,32 +118,3 @@ class ParameterInjectionUnit(nn.Module):
 
         return output
 
-class ParameterInjectedFeedforwardUnit(nn.Module):
-    """
-    Parameter injection combined with feedforward. Allows
-    for the injection of possibly relevant context in a
-    higher dimension space, and decisions to be made based on
-    said context.
-    """
-    def __init__(self,
-                 embedding_width,
-                 mem_width: int = 10,
-                 internel_width: int = 2048,
-                 heads: int = 256,
-                 mode: str = "softmax"
-                 ):
-        super().__init__()
-
-        assert internel_width % heads == 0
-
-
-        self.ff_project = nn.Linear(embedding_width, internel_width)
-        self.PIU = ParameterInjectionUnit(internel_width, mem_width, heads, mode)
-        self.activation = nn.ReLU()
-        self.ff_collapse = nn.Linear(internel_width, embedding_width)
-    def forward(self, tensor: torch.Tensor):
-        tensor = self.ff_project(tensor)
-        tensor = self.PIU(tensor)
-        tensor = self.activation(tensor)
-        tensor = self.ff_collapse(tensor)
-        return tensor

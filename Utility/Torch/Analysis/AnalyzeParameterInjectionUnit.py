@@ -30,7 +30,7 @@ class PIU_Model(nn.Module):
         self.loss = []
 
         self.norm = nn.LayerNorm(embed_width)
-        self.prediction = ContextTools.ParameterInjectionUnit(**defaults)
+        self.prediction = ContextTools.ParameterInjectionSummaryUnit(**defaults)
         self.dropout = nn.Dropout(dropout)
         self.final = nn.Linear(embed_width, total_samples)
 

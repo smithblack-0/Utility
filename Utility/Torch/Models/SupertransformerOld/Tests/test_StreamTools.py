@@ -9,8 +9,8 @@ from typing import Dict
 import torch
 import unittest
 
-import Utility.Torch.Models.Supertransformer.StreamTools2
-from Utility.Torch.Models.Supertransformer import StreamTools
+import Utility.Torch.Models.SupertransformerOld.StreamTools2
+from Utility.Torch.Models.SupertransformerOld import StreamTools
 
 
 

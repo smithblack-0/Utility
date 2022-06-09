@@ -4,8 +4,8 @@ from typing import List
 import torch
 from torch import nn
 
-import Utility.Torch.Models.Supertransformer.EnsembleTools.SuperEnsemble
-from Utility.Torch.Models.Supertransformer.Layers import EnsembleTools as Ensemble
+import Utility.Torch.Models.SupertransformerOld.EnsembleTools.SuperEnsemble
+from Utility.Torch.Models.SupertransformerOld.Layers import EnsembleTools as Ensemble
 
 
 

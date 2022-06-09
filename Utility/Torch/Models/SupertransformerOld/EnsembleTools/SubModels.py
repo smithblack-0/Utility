@@ -3,7 +3,7 @@ from typing import List, Optional, Tuple, Dict
 from torch import nn
 import treetensor.torch as torch
 
-from Utility.Torch.Models.Supertransformer import StreamTools
+from Utility.Torch.Models.SupertransformerOld import StreamTools
 
 
 class AbstractSubModel(nn.Module):

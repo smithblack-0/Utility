@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from Utility.Torch.Learnables import Layers
-from Utility.Torch.Models.Supertransformer import StreamTools
+from Utility.Torch.Models.SupertransformerOld import StreamTools
 
 
 def _L1(tensor: torch.Tensor):
