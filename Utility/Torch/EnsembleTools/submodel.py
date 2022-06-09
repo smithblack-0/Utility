@@ -1,15 +1,8 @@
-"""
-
-Submodels lie here
-
-
-"""
 from typing import List, Optional, Tuple
 
 import torch
 from torch import nn
-from torch.nn import functional as F
-from .Learnables import Layers
+
 
 class AbstractSubmodel(nn.Module):
     """
@@ -24,9 +17,12 @@ class AbstractSubmodel(nn.Module):
             -> Tuple[torch.Tensor, List[torch.Tensor]]:
         raise NotImplementedError("Forward must be implimented")
 
-class AddMergeSubmodel(AbstractSubmodel):
+
+class AdditiveSubmodel(AbstractSubmodel):
     """
     The basic addmerge submodel. Delays layernorm until start.
+
+    https://docs.google.com/drawings/d/1eW3DdGc2n1j0m_lT2fUjaS7fCtxErOJNiGnUPVhlHu4/edit
 
     """
 
@@ -39,24 +35,26 @@ class AddMergeSubmodel(AbstractSubmodel):
         self.norms = nn.ModuleList(norms)
         self.layers = nn.ModuleList(layers)
         self.dropout = nn.Dropout(dropout)
-    def forward(self, input_tensor: torch.Tensor, residual: Optional[List[torch.Tensor]]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        if residual is None:
-            residual = [None]*len(self.layers)
+        self.length = len(layers)
+    def forward(self, input_tensor: torch.Tensor, residuals: Optional[List[torch.Tensor]]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         new_residuals: List[torch.Tensor] = []
         tensor = input_tensor
-        for layer, residual, norm in zip(self.layers, residual, self.norm):
-            if residual is not None:
-                tensor = tensor + residual
+        iterator = zip(self.layers, self.norms)
+        for i, (layer, norm) in enumerate(iterator):
+            if residuals is not None:
+                tensor = tensor + residuals[i]
             tensor = norm(tensor)
             tensor = self.dropout(layer(tensor)) + tensor
             new_residuals.append(tensor)
         return tensor, new_residuals
 
-class ConcatMergeSubmodel(AbstractSubmodel):
+
+class ConcativeSubmodel(AbstractSubmodel):
     """
     Performs a concatenation of the residual entries,
     then merges the result together.
 
+    https://docs.google.com/drawings/d/1DgBFOSDj8C_FyUozFQvNdFJL5IPc7SqL0sNUdCSO1aE/edit
     """
     def __init__(self, embedding_width: int, dropout: float, layers: List[nn.Module]):
         super().__init__()
@@ -68,25 +66,28 @@ class ConcatMergeSubmodel(AbstractSubmodel):
         self.layers = nn.ModuleList(layers)
         self.dropout = nn.Dropout(dropout)
     def forward(self, input_tensor: torch.Tensor, residuals: Optional[List[torch.Tensor]]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        if residuals is None:
-            residuals = [None]*len(self.layers)
-
         new_residuals: List[torch.Tensor] = []
         tensor = input_tensor
-        for layer, residual, norm, merger, in zip(self.layers, residuals, self.norm, self.merger):
-            if residual is None:
+        iterator = zip(self.layers, self.norms, self.mergers)
+        for i, (layer, norm, merger) in enumerate(iterator):
+            if residuals is None:
                 residual = torch.zeros_like(tensor)
+            else:
+                residual = residuals[i]
             tensor = torch.concat([tensor, residual], dim=-1)
             tensor = merger(tensor)
             tensor = norm(tensor)
-            tensor = self.dropoout(layer(tensor)) + tensor
+            tensor = self.dropout(layer(tensor)) + tensor
             new_residuals.append(tensor)
         return tensor, new_residuals
 
-class GateMergeSubmodel(AbstractSubmodel):
+
+class GateSubmodel(AbstractSubmodel):
     """
     Merge residuals into stream using a logic
     gate. Specifically GRU.
+
+    https://docs.google.com/drawings/d/18KNfrRn1WTLPn1zEW-gCtP8MLtQQfQuNXsSmch2Zu38/edit
     """
     def __init__(self, embedding_width: int, dropout: float, layers: List[nn.Module]):
         super().__init__()
@@ -99,66 +100,18 @@ class GateMergeSubmodel(AbstractSubmodel):
         self.layers = nn.ModuleList(layers)
         self.dropout = nn.Dropout(dropout)
     def forward(self, input_tensor: torch.Tensor, residuals: Optional[List[torch.Tensor]]) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        if residuals is None:
-            residuals = [None]*len(self.layers)
         new_residuals: List[torch.Tensor] = []
         tensor = input_tensor
-        for layer, residual, norm, gate in zip(self.layers, residuals, self.norms, self.gates):
-            if residual is None:
+        iterator = zip(self.layers, self.norms, self.gates)
+        for i, (layer, norm, gate) in enumerate(iterator):
+            if residuals is None:
                 residual = torch.zeros_like(tensor)
-            shape = list(tensor.shape[:-1])
+            else:
+                residual = residuals[i]
+            shape = tensor.shape[:-1]
             tensor = gate(tensor.flatten(0, -2), residual.flatten(0, -2))
-            tensor = tensor.unflatten(dim=0, unflattened_size= shape + [tensor.shape[-1]])
+            tensor = tensor.unflatten(0, shape)
             tensor = norm(tensor)
             tensor = self.dropout(layer(tensor)) + tensor
             new_residuals.append(tensor)
         return tensor, new_residuals
-
-class SuperEnsemble(nn.Module):
-    def __init__(self, submodels: List[AbstractSubmodel], ensemble_channel=-3):
-        super().__init__()
-        self.submodels = nn.ModuleList(submodels)
-        self.channel = ensemble_channel
-    def forward(self, tensor: torch.Tensor):
-        channels = tensor.unbind(dim=self.channel)
-        residuals = None
-        outputs: List[torch.Tensor] = []
-        for channel, submodel in zip(channels, self.submodels):
-            output, residuals = submodel(channel, residuals)
-            outputs.append(output)
-        return torch.stack(outputs, dim=self.channel)
-
-class CrossEntropyBoost(nn.Module):
-    """
-    Cross entropy with a bit of a twist.
-
-    """
-    def __init__(self,
-                 embedding_width: int,
-                 logit_width: int,
-                 channels: int,
-                 ensemble_channel: int = -3,
-                 label_smoothing: float = 0.0):
-        super().__init__()
-        self.logit_width = logit_width
-        self.channel = ensemble_channel
-        self.logit_projector = [nn.Linear(embedding_width, logit_width) for _ in range(channels)]
-        self.logsoftmax = nn.LogSoftmax(dim=-1)
-
-
-    def forward(self, data: torch.Tensor, labels: torch.Tensor):
-        if labels.dtype == torch.int32 or labels.dtype == torch.int64 or labels.dtype == torch.int16:
-            labels = F.one_hot(labels, self.logit_width)
-        channels = data.unbind(dim=self.channel)
-        weights = torch.zeros_like(channels[0])
-        logits = torch.zeros_like(channels[0])
-        for projector, channel in zip(self.logit_projector, channels):
-            logits = logits + projector(channel)
-            if weights is not None:
-                weights = weights*labels*torch.log_softmax(channel, dim=-1)
-            else:
-                weights = labels*torch.log_softmax(data, dim=-1)
-            loss = loss + weights.sum()
-            weights = torch.exp(weights)
-        return loss
-

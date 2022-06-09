@@ -4,6 +4,7 @@ from typing import List
 import torch
 from torch import nn
 
+import Utility.Torch.EnsembleTools.superensemble
 import Utility.Torch.Models.SupertransformerOld.EnsembleTools.SuperEnsemble
 from Utility.Torch.Models.SupertransformerOld.Layers import EnsembleTools as Ensemble
 
@@ -81,7 +82,7 @@ class test_SuperEnsemble(unittest.TestCase):
 
         test_augments = [item() for item in mems]
 
-        model = Utility.Torch.Models.Supertransformer.EnsembleTools.SuperEnsemble.SuperEnsemble(submodels, mems)
+        model = Utility.Torch.EnsembleTools.superensemble.SuperEnsemble(submodels, mems)
 
         (tensor_output, memory_outputs), (tensor_res, task_res) = model(tensor)
         (tensor_output, memory_outputs), (tensor_res, task_res) = model(tensor, tensor_res, task_res)
@@ -100,7 +101,7 @@ class test_SuperEnsemble(unittest.TestCase):
         mem2 = Ensemble.MemSeed([20], torch.float32)
         mems = [mem1, mem2]
 
-        model = Utility.Torch.Models.Supertransformer.EnsembleTools.SuperEnsemble.SuperEnsemble(submodels, mems)
+        model = Utility.Torch.EnsembleTools.superensemble.SuperEnsemble(submodels, mems)
         model = torch.jit.script(model)
         model(tensor)
 
