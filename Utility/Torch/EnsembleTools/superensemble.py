@@ -3,15 +3,8 @@ from typing import List
 import torch
 from torch import nn
 
-from Utility.Torch.EnsembleTools import AbstractSubmodel
-
-class AbstractSuperEnsemble(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self, tensor: torch.Tensor)-> torch.Tensor:
-        raise NotImplementedError("Forward not implimented.")
-
-
+from Utility.Torch.EnsembleTools.submodel import AbstractSubmodel
+        
 class SuperEnsemble(nn.Module):
     def __init__(self, submodels: List[AbstractSubmodel], ensemble_channel=1):
         super().__init__()
@@ -26,5 +19,6 @@ class SuperEnsemble(nn.Module):
             output, residuals = submodel(channel, residuals)
             outputs.append(output)
         return torch.stack(outputs, dim=self.channel)
+
     def forward(self, tensor: torch.Tensor):
         pass

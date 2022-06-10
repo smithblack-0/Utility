@@ -51,27 +51,27 @@ class Linear(nn.Module):
     def __init__(self,
                  input_shape: Union[torch.Tensor, List[int], int],
                  output_shape: Union[torch.Tensor, List[int], int],
-                 head_shapes: Optional[Union[torch.Tensor, List[int], int]]=None):
+                 ensemble_shapes: Optional[Union[torch.Tensor, List[int], int]]=None,):
         """
 
         :param input_shape: The shape of the input. May be an int, or a list/tuple of ints,
             or a tensor
         :param output_shape: The shape of the output. May be an int, or a list/tuple of ints,
             or a tensor
-        :param head_shapes: The head dimensions, which come immediately prior to the
-            input dimensions. May be None, an int, or a list/tuple of ints, or a tensor
+        :param ensemble_shapes: The ensemble_shapes dimensions, which come immediately prior to the
+            input dimensions. May be None, an int, or a list of ints, or a tensor
         """
         # Super call
 
         super().__init__()
 
         # Implicit conversion
-        if head_shapes is None:
+        if ensemble_shapes is None:
             head_shapes = []
-        elif isinstance(head_shapes, int):
-            head_shapes = [head_shapes]
-        elif torch.is_tensor(head_shapes) and head_shapes.dim() == 0:
-            head_shapes = [head_shapes]
+        elif isinstance(ensemble_shapes, int):
+            head_shapes = [ensemble_shapes]
+        elif torch.is_tensor(ensemble_shapes) and ensemble_shapes.dim() == 0:
+            head_shapes = [ensemble_shapes]
         if isinstance(input_shape, int):
             input_shape = [input_shape]
         elif torch.is_tensor(input_shape) and input_shape.dim() == 0:
@@ -83,7 +83,7 @@ class Linear(nn.Module):
 
         input_shape = torch.tensor(input_shape, dtype=torch.int64)
         output_shape = torch.tensor(output_shape, dtype=torch.int64)
-        head_shapes = torch.tensor(head_shapes, dtype=torch.int64)
+        head_shapes = torch.tensor(ensemble_shapes, dtype=torch.int64)
 
         # Create kernel and bias. These include head dimensions if provided.
 
