@@ -3,7 +3,7 @@ from typing import List
 import torch
 from torch import nn
 
-from Utility.Torch.EnsembleTools.submodel import AbstractSubmodel
+from Utility.Torch.Archive.EnsembleTools.submodel import AbstractSubmodel
         
 class SuperEnsemble(nn.Module):
     def __init__(self, submodels: List[AbstractSubmodel], ensemble_channel=1):

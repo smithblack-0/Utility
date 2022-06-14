@@ -1,7 +1,7 @@
 import unittest
 import torch
 
-import Utility.Torch.Archivist as Archivist
+import Utility.Torch.Archive.Archivist as Archivist
 
 
 class testArchive(unittest.TestCase):

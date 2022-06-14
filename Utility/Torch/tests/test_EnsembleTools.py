@@ -8,10 +8,9 @@ ensemble tools module
 import unittest
 import torch
 from torch import nn
-from torch.nn import functional as F
 
-import Utility.Torch.EnsembleTools.submodel
-from Utility.Torch import EnsembleTools
+import Utility.Torch.Archive.EnsembleTools.submodel
+from Utility.Torch.Archive import EnsembleTools
 
 
 class test_AdditiveSubmodel(unittest.TestCase):
@@ -23,7 +22,7 @@ class test_AdditiveSubmodel(unittest.TestCase):
         """ Tests that a additive submodel runs at all"""
         embedding_width = 10
         layers = [nn.Linear(embedding_width, embedding_width) for _ in range(5)]
-        submodel = Utility.Torch.EnsembleTools.submodel.AdditiveSubmodel(embedding_width, 0.1, layers)
+        submodel = Utility.Torch.Archive.EnsembleTools.submodel.AdditiveSubmodel(embedding_width, 0.1, layers)
 
         tensor = torch.randn([30, embedding_width])
         output, residual = submodel(tensor, None)
@@ -32,7 +31,7 @@ class test_AdditiveSubmodel(unittest.TestCase):
         """ Tests that an additive submodel is torchscript compatible."""
         embedding_width = 10
         layers = [nn.Linear(embedding_width, embedding_width) for _ in range(5)]
-        submodel = Utility.Torch.EnsembleTools.submodel.AdditiveSubmodel(embedding_width, 0.1, layers)
+        submodel = Utility.Torch.Archive.EnsembleTools.submodel.AdditiveSubmodel(embedding_width, 0.1, layers)
         submodel = torch.jit.script(submodel)
 
         tensor = torch.randn([30, embedding_width])
@@ -47,7 +46,7 @@ class test_ConcatSubmodel(unittest.TestCase):
         """ tests that a basic case is running. """
         embedding_width = 10
         layers = [nn.Linear(embedding_width, embedding_width) for _ in range(5)]
-        submodel = Utility.Torch.EnsembleTools.submodel.ConcativeSubmodel(embedding_width, 0.1, layers)
+        submodel = Utility.Torch.Archive.EnsembleTools.submodel.ConcativeSubmodel(embedding_width, 0.1, layers)
 
         tensor = torch.randn([30, embedding_width])
         output, residual = submodel(tensor, None)
@@ -56,7 +55,7 @@ class test_ConcatSubmodel(unittest.TestCase):
         """ Test that torchscript compiles okay"""
         embedding_width = 10
         layers = [nn.Linear(embedding_width, embedding_width) for _ in range(5)]
-        submodel = Utility.Torch.EnsembleTools.submodel.ConcativeSubmodel(embedding_width, 0.1, layers)
+        submodel = Utility.Torch.Archive.EnsembleTools.submodel.ConcativeSubmodel(embedding_width, 0.1, layers)
         submodel = torch.jit.script(submodel)
 
         tensor = torch.randn([30, embedding_width])
@@ -71,7 +70,7 @@ class test_GateSubmodel(unittest.TestCase):
         """ tests whether anything works"""
         embedding_width = 10
         layers = [nn.Linear(embedding_width, embedding_width) for _ in range(5)]
-        submodel = Utility.Torch.EnsembleTools.submodel.GateSubmodel(embedding_width, 0.1, layers)
+        submodel = Utility.Torch.Archive.EnsembleTools.submodel.GateSubmodel(embedding_width, 0.1, layers)
 
         tensor = torch.randn([30, embedding_width])
         output, residual = submodel(tensor, None)
@@ -80,7 +79,7 @@ class test_GateSubmodel(unittest.TestCase):
         """ test whether torchscrip compiles"""
         embedding_width = 10
         layers = [nn.Linear(embedding_width, embedding_width) for _ in range(5)]
-        submodel = Utility.Torch.EnsembleTools.submodel.GateSubmodel(embedding_width, 0.1, layers)
+        submodel = Utility.Torch.Archive.EnsembleTools.submodel.GateSubmodel(embedding_width, 0.1, layers)
         submodel = torch.jit.script(submodel)
 
         tensor = torch.randn([30, embedding_width])

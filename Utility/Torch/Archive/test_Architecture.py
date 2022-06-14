@@ -1,7 +1,8 @@
 import unittest
 import torch
 from torch import nn
-from Utility.Torch import Architecture
+from Utility.Torch.Archive import Architecture
+
 
 class test_GLCA(unittest.TestCase):
 

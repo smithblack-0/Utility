@@ -12,7 +12,8 @@ from typing import List
 import torch
 from torch import nn
 from Utility.Torch import Learnables
-from Utility.Torch import Architecture
+from Utility.Torch.Archive import Architecture
+
 
 class AttentionSublayer(nn.Module):
     """
