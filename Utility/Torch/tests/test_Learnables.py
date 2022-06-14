@@ -7,8 +7,9 @@ import pandas
 
 from matplotlib import pyplot as plt
 from torch import nn
+
+import Utility.Torch.Learnables.Linear
 from Utility.Torch.Learnables import Layers
-from Utility.Torch.Learnables import ContextTools
 
 class testLinear(unittest.TestCase):
     """
@@ -18,7 +19,7 @@ class testLinear(unittest.TestCase):
         """ Tests if the standard pytorch linear layer is reproduced"""
 
         tensor = torch.rand([33, 2, 5])
-        tester = Layers.Linear(5, 10)
+        tester = Utility.Torch.Learnables.Linear.Linear(5, 10)
         test = tester(tensor)
         self.assertTrue(test.shape[-1] == 10, "Regular pytorch layer not reproduced")
     def test_Reshapes(self):
@@ -27,9 +28,9 @@ class testLinear(unittest.TestCase):
         tensor = torch.rand([30, 20, 15])
 
         #Define test layers
-        test_expansion = Layers.Linear(15, [5, 3])
-        test_collapse = Layers.Linear([20, 15], 300)
-        test_both = Layers.Linear([20, 15], [10, 30])
+        test_expansion = Utility.Torch.Learnables.Linear.Linear(15, [5, 3])
+        test_collapse = Utility.Torch.Learnables.Linear.Linear([20, 15], 300)
+        test_both = Utility.Torch.Learnables.Linear.Linear([20, 15], [10, 30])
 
         #Perform tests
 
@@ -52,8 +53,8 @@ class testLinear(unittest.TestCase):
 
         #Create test layers
 
-        test_single = Layers.Linear(10, 20, 20)
-        test_multiple = Layers.Linear(10, 20, (30, 20))
+        test_single = Utility.Torch.Learnables.Linear.Linear(10, 20, 20)
+        test_multiple = Utility.Torch.Learnables.Linear.Linear(10, 20, (30, 20))
 
         #Run tests
 
@@ -61,7 +62,7 @@ class testLinear(unittest.TestCase):
         test_multiple_result = test_multiple(tensor)
 
     def test_Head_Independence(self):
-        """ Tests whether each head is completely independent"""
+        """ Tests whether each ensemble is completely independent"""
         
         #Create tensors
         tensor_a = torch.stack([torch.zeros([20]), torch.zeros([20])])
@@ -69,7 +70,7 @@ class testLinear(unittest.TestCase):
         
         #create tester
         
-        test_head_independence = Layers.Linear(20, 20, 2)
+        test_head_independence = Utility.Torch.Learnables.Linear.Linear(20, 20, 2)
         
         #Run tests
         
@@ -84,7 +85,7 @@ class testLinear(unittest.TestCase):
         test_tensor = torch.randn([20, 10])
         
         #Develop test layer
-        test_grad = Layers.Linear([20, 10], 1)
+        test_grad = Utility.Torch.Learnables.Linear.Linear([20, 10], 1)
 
         #Develop optim
         test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)
@@ -98,7 +99,7 @@ class testLinear(unittest.TestCase):
         """ Test whether or not the module is scriptable when instanced"""
         # Develop test layer
         test_tensor = torch.randn([30, 20, 20])
-        test_script = Layers.Linear(20, 10, 1)
+        test_script = Utility.Torch.Learnables.Linear.Linear(20, 10, 1)
 
         #Perform test
         scripted = torch.jit.script(test_script)
@@ -175,142 +176,6 @@ class testBandedAttn(unittest.TestCase):
         tester = torch.jit.script(tester)
         tester(query, key, value)
 
-class test_NIFCU(unittest.TestCase):
-    """
-    This is the test case for the
-    NIFCU layer.
-
-    """
-    show_graphs = False
-    def setUp(self):
-        defaults = {}
-        defaults['embedding_width'] = 512
-        defaults['memory_width'] = 6
-        defaults['heads'] = 4
-        defaults['integration_lr'] = 0.001
-        defaults['decay_rate'] = 0.999
-        defaults['dropout'] = 0.95
-        self.defaults = defaults
-    def test_constructor(self):
-        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
-    def test_basic_forward(self):
-        tensor = torch.randn([10, 30, 512])
-        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
-        output = layer(tensor)
-    def test_torchscript_forward(self):
-        tensor = torch.randn([10, 30, 512])
-        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
-        layer = torch.jit.script(layer)
-        output = layer(tensor)
-
-    def test_dev(self):
-        layernorm = nn.LayerNorm(512)
-
-        inputs = layernorm(torch.randn([512, 1, 512])).detach()
-        all_labels = torch.arange(0, 512, dtype=torch.long)
-        layer = ContextTools.AutoCalibrationInjector(**self.defaults)
-        final = nn.Linear(512, 512)
-
-        batches = 1600
-        batch_size = 64
-        optim = torch.optim.Adam(layer.parameters(), lr=0.001)
-        loss_func = nn.CrossEntropyLoss()
-
-        #Starting loss
-
-        prediction = layer(inputs)
-        prediction = final(prediction).squeeze()
-        loss = loss_func(prediction, all_labels)
-
-        #Train
-        calibration = []
-        activity = []
-        accuracy = []
-        key = []
-        for i in range(batches):
-            optim.zero_grad()
-            pre_calibration = layer.CalibrationBuffer.clone().detach()
-            pre_activity = layer.activity.clone().detach()
-
-            choice = torch.randint(0, 512, [batch_size])
-            labels = all_labels[choice]
-            batch = inputs[choice, :, :]
-
-            prediction = layer(batch)
-            prediction = final(prediction).squeeze()
-            loss = loss_func(prediction, labels)
-
-            loss.backward()
-            optim.step()
-
-
-            calibration.append(layer.CalibrationBuffer.abs().mean(dim=-1).clone().detach())
-            activity.append(layer.curiosity.abs().clone().detach())
-            key.append(layer.KeyParameters.abs().mean(dim=-1).clone().detach())
-            accuracy.append(torchmetrics.functional.accuracy(prediction, labels))
-
-        for i in range(batches):
-
-            choice = torch.randint(0, 512, [batch_size])
-            labels = all_labels[choice]
-            batch = inputs[choice, :, :]
-
-            prediction = layer(batch)
-            prediction = final(prediction).squeeze()
-            loss = loss_func(prediction, labels)
-
-            calibration.append(layer.CalibrationBuffer.abs().mean(dim=-1).clone().detach())
-            activity.append(layer.curiosity.abs().clone().detach())
-            key.append(layer.KeyParameters.abs().mean(dim=-1).clone().detach())
-            accuracy.append(torchmetrics.functional.accuracy(prediction, labels))
-
-        #Eval
-
-        prediction = layer(inputs)
-        prediction = final(prediction).squeeze()
-        loss = loss_func(prediction, all_labels)
-
-        print(loss)
-        print(torchmetrics.functional.accuracy(prediction, all_labels))
-
-        calibration = torch.stack(calibration).flatten(1, 2)
-        activity = torch.stack(activity).flatten(1,2)
-        key = torch.stack(key).flatten(1, 2)
-        cal_to_key_ratio = (calibration/key)
-
-
-        calibration_names = ["calibration channel " + str(item) for item in range(calibration.shape[-1])]
-        calibration = dict(zip(calibration_names, calibration.transpose(-1, -2)))
-
-        activity_name = ["activity_channel " + str(item) for item in range(activity.shape[-1])]
-        activity = dict(zip(activity_name, activity.transpose(-1, -2)))
-
-        key_names = ["key channel " + str(item) for item in range(key.shape[-1])]
-        key = dict(zip(key_names, key.transpose(-1, -2)))
-
-        cal_key_ratio_names = ["cal key " + str(item) for item in range(cal_to_key_ratio.shape[-1])]
-        cal_to_key_ratio = dict(zip(cal_key_ratio_names, cal_to_key_ratio.transpose(-1, -2)))
-
-
-        frame = pandas.DataFrame(calibration)
-        plot = seaborn.lineplot(data=frame)
-        plt.show()
-
-        frame = pandas.DataFrame(activity)
-        plot = seaborn.lineplot(data=frame)
-        plt.show()
-
-        frame = pandas.DataFrame(key)
-        plot = seaborn.lineplot(data=frame)
-        plt.show()
-
-        frame = pandas.DataFrame(cal_to_key_ratio)
-        plot = seaborn.lineplot(data=frame)
-        plt.show()
-
-        frame = pandas.DataFrame({"accuracy" : torch.stack(accuracy)})
-        plot = seaborn.lineplot(data=frame)
-        plt.show()
 
 if __name__ == "__main__":
     unittest.main()

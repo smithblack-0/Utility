@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
+from Utility.Torch import Glimpses
+
 
 
 def manual_crossentropy(y, labels):

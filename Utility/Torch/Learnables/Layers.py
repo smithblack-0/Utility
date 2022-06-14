@@ -1,7 +1,6 @@
 # perform imports
-from typing import Union, Sequence, Optional, Callable, List, Tuple
+from typing import Optional, List, Tuple
 
-import numpy as np
 import torch
 import math
 
@@ -10,122 +9,11 @@ from torch.nn import functional as F
 
 
 # perform library imports
-from Utility.Torch import Glimpses, Paddings
-
-
-
+from Utility.Torch import Glimpses
 
 ### Head accommodation on the linear layer ###
-class Linear(nn.Module):
-    """
+from Utility.Torch.Learnables.Linear import Linear
 
-    A Linear layer allowing head-dependent linear processing of data from shape
-    to shape. JIT is supported as an instance.
-
-    An instance is made by providing a list of head_shapes,
-    an input_shape tuple, an output_shape tuple.
-
-    This is then used to initialize a head dependent linear remap
-    from input shape to output shape. That will then be accessed
-    through the instance call
-
-    It is expected that the input format will be in the form of
-
-    [..., heads, input_shape]
-
-    Returning something of format
-
-    [..., heads, output_shape]
-
-
-    Letting the head_shape parameter be none will disable it, resulting in broadcasting. Input
-    shape, output shape, and head_shapes may all be just an integer, in which case it is
-    assumed only a single dimension is involved.
-
-    """
-
-
-
-
-
-    def __init__(self,
-                 input_shape: Union[torch.Tensor, List[int], int],
-                 output_shape: Union[torch.Tensor, List[int], int],
-                 ensemble_shapes: Optional[Union[torch.Tensor, List[int], int]]=None,):
-        """
-
-        :param input_shape: The shape of the input. May be an int, or a list/tuple of ints,
-            or a tensor
-        :param output_shape: The shape of the output. May be an int, or a list/tuple of ints,
-            or a tensor
-        :param ensemble_shapes: The ensemble_shapes dimensions, which come immediately prior to the
-            input dimensions. May be None, an int, or a list of ints, or a tensor
-        """
-        # Super call
-
-        super().__init__()
-
-        # Implicit conversion
-        if ensemble_shapes is None:
-            head_shapes = []
-        elif isinstance(ensemble_shapes, int):
-            head_shapes = [ensemble_shapes]
-        elif torch.is_tensor(ensemble_shapes) and ensemble_shapes.dim() == 0:
-            head_shapes = [ensemble_shapes]
-        if isinstance(input_shape, int):
-            input_shape = [input_shape]
-        elif torch.is_tensor(input_shape) and input_shape.dim() == 0:
-            input_shape = [input_shape]
-        if isinstance(output_shape, int):
-            output_shape = [output_shape]
-        elif torch.is_tensor(output_shape) and output_shape.dim() == 0:
-            output_shape = [output_shape]
-
-        input_shape = torch.tensor(input_shape, dtype=torch.int64)
-        output_shape = torch.tensor(output_shape, dtype=torch.int64)
-        head_shapes = torch.tensor(ensemble_shapes, dtype=torch.int64)
-
-        # Create kernel and bias. These include head dimensions if provided.
-
-        if head_shapes is not None:
-
-            kernel_shape = [*head_shapes, output_shape.prod(),input_shape.prod()]
-            bias_shape = [*head_shapes, output_shape.prod()]
-        else:
-            kernel_shape = [output_shape.prod(), input_shape.prod()]
-            bias_shape = [output_shape.prod()]
-
-        kernel = torch.zeros(kernel_shape, requires_grad=True)
-        kernel = torch.nn.init.kaiming_uniform_(kernel, a=math.sqrt(5))
-
-        bias = torch.zeros(bias_shape, requires_grad=True)
-        bias = torch.nn.init.zeros_(bias)
-
-        # Store shapes and kernels
-
-        self._input_shape = input_shape
-        self._output_shape = output_shape
-
-        self._kernel = nn.Parameter(kernel)
-        self._bias = nn.Parameter(bias)
-    def forward(self, tensor):
-
-        # Flatten the relevent dimensions
-
-        tensor = Glimpses.reshape(tensor, self._input_shape, int(self._input_shape.prod()))
-
-        # Perform primary processing. Add an extra dimension on the end
-        # of the input tensor to handle the matrix multiply, perform
-        # matrix multiply, then add bias
-
-        tensor = tensor.unsqueeze(-1)
-        tensor = self._kernel.matmul(tensor)
-        tensor = tensor.squeeze(-1)
-        tensor = tensor + self._bias
-
-        # Restore the dimensions, then return
-        tensor = Glimpses.reshape(tensor, int(self._output_shape.prod()), self._output_shape)
-        return tensor
 
 class BandedMultiheadedAttention(nn.Module):
     """

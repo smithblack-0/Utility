@@ -228,7 +228,8 @@ def dilocal(tensor: torch.Tensor,
                stride_rate: int,
                dilations: Union[List[int], torch.Tensor],
                pad_to_input: bool = True,
-               pad_value: float = 0.0) -> torch.Tensor:
+               pad_value: float = 0.0,
+               pad_justification: str = "center") -> torch.Tensor:
     """
 
     Performs the local operation in parallel with a variety of different dilations. Entries
@@ -243,10 +244,13 @@ def dilocal(tensor: torch.Tensor,
     :param stride_rate: The stride rate to use
     :param dilations: A list of the dilations. Each one will end up on a head dimension
     :param pad_to_input_size: Whether or not to ensure the output is as wide as the input.
+    :param pad_value: What to pad with.
+    :param pad_justification: May be "forward", "center", or "backward".
     :return: tensor. Has shape (dilations, items, kernel_width).
     """
     assert isinstance(kernel_width, int)
     assert isinstance(stride_rate, int)
+    assert pad_justification in ("forward", "center", "backward")
 
     if not isinstance(dilations, torch.Tensor):
         torch.jit.annotate(List[int], dilations)
@@ -261,13 +265,28 @@ def dilocal(tensor: torch.Tensor,
     else:
         total_padding = principle_padding
 
-    post_padding = int(total_padding//2)
-    prior_padding = int(total_padding - post_padding)
-    pad_op = (prior_padding, post_padding)
-
     particular_total_offsets = principle_padding - (kernel_width-1)*(dilations-1)
-    end_offsets = (particular_total_offsets/2).type(torch.int64)
-    start_offsets = particular_total_offsets - end_offsets
+    particular_total_offsets = particular_total_offsets.type(torch.int64)
+
+    if pad_justification == "forward":
+        post_padding: int = 0
+        prior_padding: int = int(total_padding)
+
+        start_offsets = particular_total_offsets
+        end_offsets = particular_total_offsets - start_offsets
+    elif pad_justification == "center":
+        post_padding: int = int(total_padding//2)
+        prior_padding: int = int(total_padding - post_padding)
+
+        end_offsets = (particular_total_offsets/2).type(torch.int64)
+        start_offsets = particular_total_offsets - end_offsets
+    else:
+        post_padding: int = int(total_padding)
+        prior_padding: int = 0
+
+        end_offsets = particular_total_offsets
+        start_offsets = particular_total_offsets - end_offsets
+    pad_op = (prior_padding, post_padding)
 
     #Create the buffer, then create and stack the views.
 
