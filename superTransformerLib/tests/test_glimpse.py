@@ -3,7 +3,8 @@ import unittest
 import numpy as np
 import torch
 
-from Utility.Torch import Glimpses
+from superTransformerLib.transformerLib import Glimpses
+
 
 class testView(unittest.TestCase):
     def testBasic(self):

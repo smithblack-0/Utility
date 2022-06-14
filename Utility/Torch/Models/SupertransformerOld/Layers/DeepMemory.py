@@ -6,11 +6,10 @@ rather thqn saving each instance to an external memory bank, instead we search a
 space of differential memory, and only train the topk instances
 
 """
-from typing import Optional
 
 import torch
 from torch import nn
-from Utility.Torch.Learnables import Layers
+
 
 class DeepMemoryTransformer(nn.Module):
     """

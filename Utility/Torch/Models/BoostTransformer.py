@@ -11,7 +11,7 @@ from typing import List
 
 import torch
 from torch import nn
-from Utility.Torch import Learnables
+import superTransformerLib
 from Utility.Torch.Archive import Architecture
 
 
@@ -150,12 +150,12 @@ class EncoderSubLayer(nn.Module):
 
         for d_model in d_models:
 
-            attn = Learnables.BandedMultiheadedAttention(d_model,
-                                                        kernel_width,
-                                                        dilation_rates= dilation_rates,
-                                                         supersampling=supersampling,
-                                                         pad=True,
-                                                         trim=True)
+            attn = superTransformerLib.BandedMultiheadedAttention(d_model,
+                                                                  kernel_width,
+                                                                  dilation_rates= dilation_rates,
+                                                                  supersampling=supersampling,
+                                                                  pad=True,
+                                                                  trim=True)
             self._ComponentAttn.append(attn)
 
             norm = nn.LayerNorm(d_model)
@@ -165,7 +165,7 @@ class EncoderSubLayer(nn.Module):
 
         self._ComponentAttn = []
 
-        self._ComponentFF = [Learnables.Feedforward(d_model, d_model*4) for d_model in d_models]
+        self._ComponentFF = [superTransformerLib.Feedforward(d_model, d_model * 4) for d_model in d_models]
 
 
         self._TLayerNorms = nn.ModuleList([nn.LayerNorm(d_model) for d_model in CC_Converter.d_models])

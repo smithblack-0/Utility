@@ -1,12 +1,10 @@
-import math
 import uuid
 import warnings
-from typing import List
 
 import torch
 from torch import nn
 
-from Utility.Torch import Learnables
+import superTransformerLib
 from Utility.Torch import Activation
 
 """
@@ -298,11 +296,11 @@ class Indexer(nn.Module):
         #Setup the kernel projection layers, then the Index resolution and
         #Metadata Resolution layers
         intermediate_width: int = round(projection_multiplier*d_model)
-        self._ff: Learnables.Linear = Learnables.Linear(d_model, intermediate_width)
+        self._ff: superTransformerLib.Linear = superTransformerLib.Linear(d_model, intermediate_width)
         self._activation: Activation.vl_relu = Activation.vl_relu
 
-        self._indexer: Learnables.Linear = Learnables.Linear(intermediate_width, d_index)
-        self._metainfo: Learnables.Linear = Learnables.Linear(intermediate_width, d_index)
+        self._indexer: superTransformerLib.Linear = superTransformerLib.Linear(intermediate_width, d_index)
+        self._metainfo: superTransformerLib.Linear = superTransformerLib.Linear(intermediate_width, d_index)
 
         #Create the dropout layer
 
@@ -418,10 +416,10 @@ class Retrieval(nn.Module):
 
         """
 
-        archive_encoder = Learnables.Linear(self._dquery, (self._heads, d_index))
+        archive_encoder = superTransformerLib.Linear(self._dquery, (self._heads, d_index))
         archive_encoder = lambda x : archive_encoder(x).transpose(-2, -3) #(..., head, query, d_index)
         archive_encoder = lambda x : self._dropout(archive_encoder(x))
-        archive_decoder = Learnables.Linear(d_model, self._dmodel) #Back to my dimensions
+        archive_decoder = superTransformerLib.Linear(d_model, self._dmodel) #Back to my dimensions
         return archive_encoder, archive_decoder
     def forward(self, query : torch.tensor, archives : list):
         """

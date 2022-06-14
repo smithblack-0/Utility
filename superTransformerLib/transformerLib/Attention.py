@@ -3,9 +3,9 @@ from typing import Optional, List
 import torch
 from torch import nn
 
-import Utility.Torch
-from Utility.Torch.Learnables.Linear import Linear
-from Utility.Torch import Glimpses
+from superTransformerLib.transformerLib.Linear import Linear
+from superTransformerLib.transformerLib import Glimpses
+
 
 def _dot_product_attention(
                            query: torch.Tensor,

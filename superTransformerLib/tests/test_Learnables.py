@@ -1,15 +1,8 @@
-import asyncio
 import unittest
 import torch
-import torchmetrics
-import seaborn
-import pandas
 
-from matplotlib import pyplot as plt
-from torch import nn
-
-import Utility.Torch.Learnables.Linear
-from Utility.Torch.Learnables import Layers
+from superTransformerLib.transformerLib import Layers
+from superTransformerLib.transformerLib.Linear import Linear
 
 class testLinear(unittest.TestCase):
     """
@@ -19,7 +12,7 @@ class testLinear(unittest.TestCase):
         """ Tests if the standard pytorch linear layer is reproduced"""
 
         tensor = torch.rand([33, 2, 5])
-        tester = Utility.Torch.Learnables.Linear.Linear(5, 10)
+        tester = Linear(5, 10)
         test = tester(tensor)
         self.assertTrue(test.shape[-1] == 10, "Regular pytorch layer not reproduced")
     def test_Reshapes(self):
@@ -28,9 +21,9 @@ class testLinear(unittest.TestCase):
         tensor = torch.rand([30, 20, 15])
 
         #Define test layers
-        test_expansion = Utility.Torch.Learnables.Linear.Linear(15, [5, 3])
-        test_collapse = Utility.Torch.Learnables.Linear.Linear([20, 15], 300)
-        test_both = Utility.Torch.Learnables.Linear.Linear([20, 15], [10, 30])
+        test_expansion = Linear(15, [5, 3])
+        test_collapse = Linear([20, 15], 300)
+        test_both = Linear([20, 15], [10, 30])
 
         #Perform tests
 
@@ -53,8 +46,8 @@ class testLinear(unittest.TestCase):
 
         #Create test layers
 
-        test_single = Utility.Torch.Learnables.Linear.Linear(10, 20, 20)
-        test_multiple = Utility.Torch.Learnables.Linear.Linear(10, 20, (30, 20))
+        test_single = Linear(10, 20, 20)
+        test_multiple = Linear(10, 20, (30, 20))
 
         #Run tests
 
@@ -70,7 +63,7 @@ class testLinear(unittest.TestCase):
         
         #create tester
         
-        test_head_independence = Utility.Torch.Learnables.Linear.Linear(20, 20, 2)
+        test_head_independence = Linear(20, 20, 2)
         
         #Run tests
         
@@ -85,7 +78,7 @@ class testLinear(unittest.TestCase):
         test_tensor = torch.randn([20, 10])
         
         #Develop test layer
-        test_grad = Utility.Torch.Learnables.Linear.Linear([20, 10], 1)
+        test_grad = Linear([20, 10], 1)
 
         #Develop optim
         test_optim = torch.optim.SGD(test_grad.parameters(), lr=0.01)
@@ -99,7 +92,7 @@ class testLinear(unittest.TestCase):
         """ Test whether or not the module is scriptable when instanced"""
         # Develop test layer
         test_tensor = torch.randn([30, 20, 20])
-        test_script = Utility.Torch.Learnables.Linear.Linear(20, 10, 1)
+        test_script = Linear(20, 10, 1)
 
         #Perform test
         scripted = torch.jit.script(test_script)

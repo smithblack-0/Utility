@@ -3,8 +3,6 @@ import torch
 import torchmetrics
 from torch import nn
 
-import Utility.Torch.Learnables.Attention
-from Utility.Torch.Learnables import ContextTools
 import seaborn as sns
 import matplotlib.pyplot as plt
 
@@ -32,7 +30,7 @@ class PIU_Model(nn.Module):
         self.loss = []
 
         self.norm = nn.LayerNorm(embed_width)
-        self.prediction = Utility.Torch.Learnables.Attention.PIMU(**defaults)
+        self.prediction = Learnables.Attention.PIMU(**defaults)
         self.dropout = nn.Dropout(dropout)
         self.final = nn.Linear(embed_width, total_samples)
 

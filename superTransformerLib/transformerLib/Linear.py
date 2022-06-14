@@ -10,7 +10,7 @@ from typing import Union, List, Optional, Dict
 import torch
 from torch import nn
 
-from Utility.Torch import Glimpses
+from superTransformerLib.transformerLib import Glimpses
 
 
 class Linear(nn.Module):

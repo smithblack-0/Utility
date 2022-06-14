@@ -1,11 +1,7 @@
-"""
-
-A test group for the collection of layers in attention.
-
-"""
-import torch
 import unittest
-from Utility.Torch.Learnables import Attention
+import torch
+
+from superTransformerLib.transformerLib import Attention
 
 
 def shape_equal(shape1, shape2):
@@ -238,7 +234,7 @@ class test_GLSA(unittest.TestCase):
     def test_basic(self):
         """ Test whether GLSA works at all"""
         query = torch.randn([3, 5, 10, 32])
-        layer = Attention.GLSA(32,64, 10, 8)
+        layer = Attention.GLSA(32, 64, 10, 8)
         glsa = layer(query)
         self.assertTrue(shape_equal(glsa.shape, [3, 5, 10, 32]))
     def test_ensemble(self):
@@ -290,3 +286,6 @@ class test_GSPU(unittest.TestCase):
         output = layer(query)
 
         self.assertTrue(shape_equal(output.shape, [3, 5, 10, 32]))
+
+if __name__ == '__main__':
+    unittest.main()
